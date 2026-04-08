@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -eo pipefail
+[[ $DOKKU_TRACE ]] && set -x
+
+AUDIT_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PLUGIN_AVAILABLE_PATH="${PLUGIN_AVAILABLE_PATH:-$AUDIT_SCRIPT_DIR}"
+
+if [[ -n "${PLUGIN_CORE_AVAILABLE_PATH:-}" ]] && [[ -f "$PLUGIN_CORE_AVAILABLE_PATH/common/functions" ]]; then
+  # shellcheck source=/dev/null
+  source "$PLUGIN_CORE_AVAILABLE_PATH/common/functions"
+fi
+
+# shellcheck source=/dev/null
+source "$PLUGIN_AVAILABLE_PATH/functions"
+
+audit_run_migrations false false >/dev/null
+audit_db_exec 'PRAGMA optimize;'
+audit_meta_set "last_optimize_at" "$(audit_now_utc)"
+audit_insert_maintenance_event "migrate" "maintenance_migrate" "plugin update maintenance completed" '{"optimize":true}'
+
+audit_log "${AUDIT_PLUGIN_NAME}: update maintenance completed"

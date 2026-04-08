@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+set -eo pipefail
+[[ $DOKKU_TRACE ]] && set -x
+
+AUDIT_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PLUGIN_AVAILABLE_PATH="${PLUGIN_AVAILABLE_PATH:-$AUDIT_SCRIPT_DIR}"
+
+if [[ -n "${PLUGIN_CORE_AVAILABLE_PATH:-}" ]] && [[ -f "$PLUGIN_CORE_AVAILABLE_PATH/common/functions" ]]; then
+  # shellcheck source=/dev/null
+  source "$PLUGIN_CORE_AVAILABLE_PATH/common/functions"
+fi
+
+# shellcheck source=/dev/null
+source "$PLUGIN_AVAILABLE_PATH/functions"
+
+audit_handle_deploy_source_set() {
+  local app="$1"
+  local source_type="$2"
+  shift 2 || true
+  local metadata_raw="$*"
+  local ts
+  local correlation_id
+  local metadata_json='{}'
+
+  [[ -n "$app" ]] || audit_die "missing app name"
+  [[ -n "$source_type" ]] || audit_die "missing source type"
+
+  ts="$(audit_now_utc)"
+  correlation_id="$(audit_pending_correlation_id "$app")"
+  if [[ -z "$correlation_id" ]]; then
+    correlation_id="$(audit_generate_correlation_id)"
+  fi
+  if [[ -n "$metadata_raw" ]]; then
+    metadata_json="{\"deploy_metadata_raw\":$(audit_json_string "$metadata_raw") }"
+  fi
+
+  audit_db_exec "BEGIN IMMEDIATE;
+INSERT INTO pending_deploys(
+  app,
+  correlation_id,
+  source_type,
+  rev,
+  metadata_json,
+  first_seen_ts,
+  updated_ts
+) VALUES (
+  $(audit_sql_quote "$app"),
+  $(audit_sql_quote "$correlation_id"),
+  $(audit_sql_quote "$source_type"),
+  NULL,
+  $(audit_sql_quote "$metadata_json"),
+  $(audit_sql_quote "$ts"),
+  $(audit_sql_quote "$ts")
+) ON CONFLICT(app) DO UPDATE SET
+  correlation_id = excluded.correlation_id,
+  source_type = excluded.source_type,
+  rev = COALESCE(pending_deploys.rev, excluded.rev),
+  metadata_json = json_patch(COALESCE(pending_deploys.metadata_json, '{}'), json(excluded.metadata_json)),
+  updated_ts = excluded.updated_ts;
+INSERT INTO events (
+  ts,
+  app,
+  category,
+  action,
+  status,
+  classification,
+  source_trigger,
+  source_type,
+  image_tag,
+  rev,
+  actor_type,
+  actor_name,
+  correlation_id,
+  message,
+  meta_json,
+  created_at
+) VALUES (
+  $(audit_sql_quote "$ts"),
+  $(audit_sql_quote "$app"),
+  'deploy',
+  'source-set',
+  'success',
+  'deploy_source_metadata',
+  'deploy-source-set',
+  $(audit_sql_quote "$source_type"),
+  NULL,
+  NULL,
+  'system',
+  NULL,
+  $(audit_sql_quote "$correlation_id"),
+  'deploy source metadata recorded',
+  json_object('source_type', $(audit_sql_quote "$source_type"), 'deploy_metadata_raw', $(audit_sql_nullable "$metadata_raw")),
+  $(audit_sql_quote "$ts")
+);
+COMMIT;"
+}
+
+audit_trigger_guard "deploy-source-set" "${1:-}" audit_handle_deploy_source_set "$@"

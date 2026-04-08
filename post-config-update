@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -eo pipefail
+[[ $DOKKU_TRACE ]] && set -x
+
+AUDIT_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PLUGIN_AVAILABLE_PATH="${PLUGIN_AVAILABLE_PATH:-$AUDIT_SCRIPT_DIR}"
+
+if [[ -n "${PLUGIN_CORE_AVAILABLE_PATH:-}" ]] && [[ -f "$PLUGIN_CORE_AVAILABLE_PATH/common/functions" ]]; then
+  # shellcheck source=/dev/null
+  source "$PLUGIN_CORE_AVAILABLE_PATH/common/functions"
+fi
+
+# shellcheck source=/dev/null
+source "$PLUGIN_AVAILABLE_PATH/functions"
+
+audit_handle_post_config_update() {
+  local app="$1"
+  local action="$2"
+  shift 2 || true
+  local keys=()
+  local message
+  local meta_json
+  local key
+
+  [[ -n "$app" ]] || audit_die "missing app name"
+  [[ -n "$action" ]] || audit_die "missing config action"
+
+  while IFS= read -r key; do
+    [[ -n "$key" ]] || continue
+    keys+=("$key")
+  done < <(audit_extract_config_keys "$@")
+
+  message="$(audit_message_for_config_change "$action" "${keys[@]}")"
+  meta_json="{\"keys\":$(audit_json_array_from_args "${keys[@]}"),\"value_redacted\":true}"
+
+  audit_insert_event "$app" "config" "$action" "success" "config_change" "post-config-update" "" "" "" "system" "" "" "$message" "$meta_json"
+}
+
+audit_trigger_guard "post-config-update" "${1:-}" audit_handle_post_config_update "$@"

@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -eo pipefail
+[[ $DOKKU_TRACE ]] && set -x
+
+AUDIT_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PLUGIN_AVAILABLE_PATH="${PLUGIN_AVAILABLE_PATH:-$AUDIT_SCRIPT_DIR}"
+
+if [[ -n "${PLUGIN_CORE_AVAILABLE_PATH:-}" ]] && [[ -f "$PLUGIN_CORE_AVAILABLE_PATH/common/functions" ]]; then
+  # shellcheck source=/dev/null
+  source "$PLUGIN_CORE_AVAILABLE_PATH/common/functions"
+fi
+
+# shellcheck source=/dev/null
+source "$PLUGIN_AVAILABLE_PATH/functions"
+
+if [[ -n "${1:-}" ]] && [[ "$1" != "$AUDIT_PLUGIN_NAME" ]]; then
+  audit_die "unexpected plugin name '$1'"
+fi
+
+audit_log "${AUDIT_PLUGIN_NAME}: preserved database at $(audit_db_path)"

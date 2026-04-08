@@ -1,0 +1,5 @@
+[plugin]
+description = "Durable operational audit history for Dokku"
+version = "0.1.0"
+
+[plugin.config]

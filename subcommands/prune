@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+set -eo pipefail
+[[ $DOKKU_TRACE ]] && set -x
+
+AUDIT_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PLUGIN_AVAILABLE_PATH="${PLUGIN_AVAILABLE_PATH:-$(cd "$AUDIT_SCRIPT_DIR/.." && pwd)}"
+
+if [[ -n "${PLUGIN_CORE_AVAILABLE_PATH:-}" ]] && [[ -f "$PLUGIN_CORE_AVAILABLE_PATH/common/functions" ]]; then
+  # shellcheck source=/dev/null
+  source "$PLUGIN_CORE_AVAILABLE_PATH/common/functions"
+fi
+
+# shellcheck source=/dev/null
+source "$PLUGIN_AVAILABLE_PATH/functions"
+
+audit_require_database
+
+older_than=""
+category=""
+classification=""
+confirmed=false
+
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    --older-than)
+      older_than="$2"
+      shift
+      ;;
+    --category)
+      category="$2"
+      shift
+      ;;
+    --classification)
+      classification="$2"
+      shift
+      ;;
+    --yes)
+      confirmed=true
+      ;;
+    *)
+      audit_die "unknown argument: $1"
+      exit 1
+      ;;
+  esac
+  shift
+done
+
+[[ -n "$older_than" ]] || audit_die "--older-than is required"
+[[ "$older_than" =~ ^[0-9]+$ ]] || audit_die "--older-than must be a positive integer"
+audit_is_true "$confirmed" || audit_die "refusing to prune without --yes"
+
+cutoff="$(audit_days_ago_utc "$older_than")"
+where_clause="ts < $(audit_sql_quote "$cutoff")"
+if [[ -n "$category" ]]; then
+  where_clause+=" AND category = $(audit_sql_quote "$category")"
+fi
+if [[ -n "$classification" ]]; then
+  where_clause+=" AND classification = $(audit_sql_quote "$classification")"
+fi
+
+ts="$(audit_now_utc)"
+deleted_count="$(audit_db_query_single "BEGIN IMMEDIATE;
+DELETE FROM events WHERE ${where_clause};
+CREATE TEMP TABLE audit_prune_state(value INTEGER NOT NULL);
+INSERT INTO audit_prune_state(value) SELECT changes();
+INSERT INTO events (
+  ts,
+  app,
+  category,
+  action,
+  status,
+  classification,
+  source_trigger,
+  source_type,
+  image_tag,
+  rev,
+  actor_type,
+  actor_name,
+  correlation_id,
+  message,
+  meta_json,
+  created_at
+) VALUES (
+  $(audit_sql_quote "$ts"),
+  NULL,
+  'maintenance',
+  'prune',
+  'success',
+  'maintenance_prune',
+  'manual',
+  NULL,
+  NULL,
+  NULL,
+  'system',
+  NULL,
+  NULL,
+  'prune completed',
+  json_object('older_than_days', ${older_than}, 'deleted_count', (SELECT value FROM audit_prune_state LIMIT 1)),
+  $(audit_sql_quote "$ts")
+);
+SELECT value FROM audit_prune_state LIMIT 1;
+DROP TABLE audit_prune_state;
+COMMIT;")"
+
+printf 'deleted events: %s\n' "$deleted_count"

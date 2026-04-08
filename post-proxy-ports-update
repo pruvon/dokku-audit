@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -eo pipefail
+[[ $DOKKU_TRACE ]] && set -x
+
+AUDIT_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PLUGIN_AVAILABLE_PATH="${PLUGIN_AVAILABLE_PATH:-$AUDIT_SCRIPT_DIR}"
+
+if [[ -n "${PLUGIN_CORE_AVAILABLE_PATH:-}" ]] && [[ -f "$PLUGIN_CORE_AVAILABLE_PATH/common/functions" ]]; then
+  # shellcheck source=/dev/null
+  source "$PLUGIN_CORE_AVAILABLE_PATH/common/functions"
+fi
+
+# shellcheck source=/dev/null
+source "$PLUGIN_AVAILABLE_PATH/functions"
+
+audit_handle_post_proxy_ports_update() {
+  local app="$1"
+  local action="$2"
+  shift 2 || true
+  local meta_json='{}'
+
+  [[ -n "$app" ]] || audit_die "missing app name"
+  [[ -n "$action" ]] || audit_die "missing ports action"
+
+  if [[ "$#" -gt 0 ]]; then
+    meta_json="{\"port_mapping_count\":$#,\"details_redacted\":true}"
+  fi
+
+  audit_insert_event "$app" "ports" "$action" "success" "ports_change" "post-proxy-ports-update" "" "" "" "system" "" "" "$(audit_message_for_ports_change "$action")" "$meta_json"
+}
+
+audit_trigger_guard "post-proxy-ports-update" "${1:-}" audit_handle_post_proxy_ports_update "$@"

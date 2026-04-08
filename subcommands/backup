@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+set -eo pipefail
+[[ $DOKKU_TRACE ]] && set -x
+
+AUDIT_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PLUGIN_AVAILABLE_PATH="${PLUGIN_AVAILABLE_PATH:-$(cd "$AUDIT_SCRIPT_DIR/.." && pwd)}"
+
+if [[ -n "${PLUGIN_CORE_AVAILABLE_PATH:-}" ]] && [[ -f "$PLUGIN_CORE_AVAILABLE_PATH/common/functions" ]]; then
+  # shellcheck source=/dev/null
+  source "$PLUGIN_CORE_AVAILABLE_PATH/common/functions"
+fi
+
+# shellcheck source=/dev/null
+source "$PLUGIN_AVAILABLE_PATH/functions"
+
+audit_require_database
+
+output_path=""
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    --output)
+      output_path="$2"
+      shift
+      ;;
+    *)
+      audit_die "unknown argument: $1"
+      exit 1
+      ;;
+  esac
+  shift
+done
+
+if [[ -z "$output_path" ]]; then
+  output_path="$(audit_backup_dir)/audit-$(date -u +%Y%m%d-%H%M%S).db"
+fi
+
+mkdir -p "$(dirname "$output_path")"
+escaped_output_path=${output_path//\'/\'\'}
+sqlite3 "$(audit_db_path)" ".backup '$escaped_output_path'"
+chmod 0640 "$output_path" 2>/dev/null || true
+
+audit_insert_maintenance_event "backup" "maintenance_backup" "backup created" "{\"output_path\":$(audit_json_string "$output_path") }"
+printf '%s\n' "$output_path"

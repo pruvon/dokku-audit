@@ -1,0 +1,9 @@
+plugin version: 0.1.0
+database path: __DB_PATH__
+application id: 1145132356
+schema version: 2
+journal mode: wal
+total events: 1
+pending deploy count: 0
+last event timestamp: 2026-04-08T20:00:00Z
+last migration timestamp: 2026-04-08T20:00:00Z

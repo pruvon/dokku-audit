@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -eo pipefail
+[[ $DOKKU_TRACE ]] && set -x
+
+AUDIT_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PLUGIN_AVAILABLE_PATH="${PLUGIN_AVAILABLE_PATH:-$AUDIT_SCRIPT_DIR}"
+
+if [[ -n "${PLUGIN_CORE_AVAILABLE_PATH:-}" ]] && [[ -f "$PLUGIN_CORE_AVAILABLE_PATH/common/functions" ]]; then
+  # shellcheck source=/dev/null
+  source "$PLUGIN_CORE_AVAILABLE_PATH/common/functions"
+fi
+
+# shellcheck source=/dev/null
+source "$PLUGIN_AVAILABLE_PATH/functions"
+
+if [[ ! -f "$(audit_db_path)" ]]; then
+  cat <<EOF
+    audit plugin enabled: true
+    audit database path: $(audit_db_path)
+    audit schema version: unavailable
+    audit total events: unavailable
+    audit pending deploys: unavailable
+    audit last event: unavailable
+EOF
+  exit 0
+fi
+
+cat <<EOF
+    audit plugin enabled: true
+    audit database path: $(audit_db_path)
+    audit schema version: $(audit_user_version)
+    audit total events: $(audit_db_query_single 'SELECT COUNT(1) FROM events;')
+    audit pending deploys: $(audit_db_query_single 'SELECT COUNT(1) FROM pending_deploys;')
+    audit last event: $(audit_db_query_single 'SELECT COALESCE(MAX(ts), "-") FROM events;')
+EOF

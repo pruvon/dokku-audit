@@ -1,0 +1,8 @@
+ID  TIME                  CATEGORY  ACTION      CLASSIFICATION          STATUS   MESSAGE
+8   2026-04-08T20:07:00Z  ports     add         ports_change            success  ports add
+7   2026-04-08T20:06:00Z  domains   add         domains_change          success  domains add: example.com, www.example.com
+6   2026-04-08T20:05:00Z  config    set         config_change           success  config keys set: RAILS_ENV, SECRET_KEY_BASE
+5   2026-04-08T20:04:00Z  deploy    finish      source_deploy           success  source deploy finished
+4   2026-04-08T20:03:00Z  deploy    source-set  deploy_source_metadata  success  deploy source metadata recorded
+3   2026-04-08T20:02:00Z  deploy    receive     source_received         success  source received
+2   2026-04-08T20:01:00Z  app       create      app_create              success  app created

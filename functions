@@ -1,0 +1,766 @@
+#!/usr/bin/env bash
+set -eo pipefail
+[[ $DOKKU_TRACE ]] && set -x
+
+if [[ -z "${AUDIT_PLUGIN_ROOT:-}" ]]; then
+  AUDIT_PLUGIN_ROOT="${PLUGIN_AVAILABLE_PATH:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+fi
+
+PLUGIN_AVAILABLE_PATH="$AUDIT_PLUGIN_ROOT"
+AUDIT_PLUGIN_NAME="dokku-audit"
+AUDIT_DEFAULT_DATA_DIR="/var/lib/dokku/data/dokku-audit"
+AUDIT_DEFAULT_BUSY_TIMEOUT_MS="${DOKKU_AUDIT_BUSY_TIMEOUT_MS:-5000}"
+AUDIT_DEFAULT_PENDING_STALE_THRESHOLD_SECONDS="${DOKKU_AUDIT_PENDING_STALE_THRESHOLD_SECONDS:-86400}"
+AUDIT_DEFAULT_STRICT_MODE="${DOKKU_AUDIT_STRICT_MODE:-false}"
+AUDIT_DEFAULT_JOURNAL_MODE="${DOKKU_AUDIT_JOURNAL_MODE:-WAL}"
+AUDIT_APPLICATION_ID="1145132356"
+
+audit_plugin_version() {
+  if [[ -f "$AUDIT_PLUGIN_ROOT/plugin.toml" ]]; then
+    awk -F '"' '/^version = / { print $2; exit }' "$AUDIT_PLUGIN_ROOT/plugin.toml"
+    return 0
+  fi
+
+  printf '0.1.0\n'
+}
+
+audit_data_dir() {
+  printf '%s\n' "${DOKKU_AUDIT_DATA_DIR:-${AUDIT_DATA_DIR:-$AUDIT_DEFAULT_DATA_DIR}}"
+}
+
+audit_db_path() {
+  printf '%s\n' "${DOKKU_AUDIT_DB_PATH:-${AUDIT_DB_PATH:-$(audit_data_dir)/audit.db}}"
+}
+
+audit_backup_dir() {
+  printf '%s\n' "${DOKKU_AUDIT_BACKUP_DIR:-${AUDIT_BACKUP_DIR:-$(audit_data_dir)/backups}}"
+}
+
+audit_lock_file() {
+  printf '%s\n' "${DOKKU_AUDIT_LOCK_FILE:-${AUDIT_LOCK_FILE:-$(audit_data_dir)/migrate.lock}}"
+}
+
+audit_busy_timeout_ms() {
+  printf '%s\n' "$AUDIT_DEFAULT_BUSY_TIMEOUT_MS"
+}
+
+audit_pending_stale_threshold_seconds() {
+  printf '%s\n' "$AUDIT_DEFAULT_PENDING_STALE_THRESHOLD_SECONDS"
+}
+
+audit_strict_mode() {
+  printf '%s\n' "$AUDIT_DEFAULT_STRICT_MODE"
+}
+
+audit_journal_mode_preference() {
+  printf '%s\n' "$AUDIT_DEFAULT_JOURNAL_MODE"
+}
+
+audit_log() {
+  printf '%s\n' "$*"
+}
+
+audit_warn() {
+  printf '%s\n' "${AUDIT_PLUGIN_NAME}: warning: $*" >&2
+}
+
+audit_error() {
+  printf '%s\n' "${AUDIT_PLUGIN_NAME}: error: $*" >&2
+}
+
+audit_die() {
+  audit_error "$*"
+  return 1
+}
+
+audit_has_command() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+audit_is_true() {
+  case "${1:-}" in
+    1|true|TRUE|yes|YES|on|ON)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+audit_lower() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
+}
+
+audit_require_sqlite() {
+  audit_has_command sqlite3 || audit_die "sqlite3 executable is required"
+}
+
+audit_require_database() {
+  local db_path
+  db_path="$(audit_db_path)"
+
+  [[ -f "$db_path" ]] || audit_die "database not found at $db_path"
+  [[ -r "$db_path" ]] || audit_die "database is not readable at $db_path"
+}
+
+audit_now_utc() {
+  if [[ -n "${DOKKU_AUDIT_NOW:-}" ]]; then
+    printf '%s\n' "$DOKKU_AUDIT_NOW"
+    return 0
+  fi
+
+  date -u +"%Y-%m-%dT%H:%M:%SZ"
+}
+
+audit_days_ago_utc() {
+  local days="$1"
+
+  if date -u -d "${days} days ago" +"%Y-%m-%dT%H:%M:%SZ" >/dev/null 2>&1; then
+    date -u -d "${days} days ago" +"%Y-%m-%dT%H:%M:%SZ"
+    return 0
+  fi
+
+  if date -u -v-"${days}"d +"%Y-%m-%dT%H:%M:%SZ" >/dev/null 2>&1; then
+    date -u -v-"${days}"d +"%Y-%m-%dT%H:%M:%SZ"
+    return 0
+  fi
+
+  audit_die "unable to compute relative timestamp for ${days} days"
+}
+
+audit_generate_correlation_id() {
+  if [[ -n "${DOKKU_AUDIT_CORRELATION_ID:-}" ]]; then
+    printf '%s\n' "$DOKKU_AUDIT_CORRELATION_ID"
+    return 0
+  fi
+
+  printf 'aud_%s_%s\n' "${DOKKU_AUDIT_EPOCH_MS:-$(date +%s)000}" "${DOKKU_AUDIT_RANDOM_HEX:-$(printf '%04x%04x' "$RANDOM" "$RANDOM")}" 
+}
+
+audit_sql_quote() {
+  local value="$1"
+
+  value=${value//\'/\'\'}
+  printf "'%s'" "$value"
+}
+
+audit_sql_nullable() {
+  local value="${1-}"
+
+  if [[ -z "$value" ]]; then
+    printf 'NULL'
+    return 0
+  fi
+
+  audit_sql_quote "$value"
+}
+
+audit_json_escape() {
+  local value="$1"
+
+  value=${value//\\/\\\\}
+  value=${value//\"/\\\"}
+  value=${value//$'\n'/\\n}
+  value=${value//$'\r'/\\r}
+  value=${value//$'\t'/\\t}
+  printf '%s' "$value"
+}
+
+audit_json_string() {
+  printf '"%s"' "$(audit_json_escape "$1")"
+}
+
+audit_json_or_null() {
+  local value="${1-}"
+
+  if [[ -z "$value" ]]; then
+    printf 'null'
+    return 0
+  fi
+
+  audit_json_string "$value"
+}
+
+audit_json_array_from_args() {
+  local first=1
+  local item
+
+  printf '['
+  for item in "$@"; do
+    if [[ "$first" -eq 0 ]]; then
+      printf ','
+    fi
+    first=0
+    audit_json_string "$item"
+  done
+  printf ']'
+}
+
+audit_message_for_deploy_finish() {
+  local classification="$1"
+
+  if [[ "$classification" == "source_deploy" ]]; then
+    printf 'source deploy finished\n'
+    return 0
+  fi
+
+  printf 'release-only deploy finished\n'
+}
+
+audit_message_for_config_change() {
+  local action="$1"
+  shift
+
+  if [[ "$#" -eq 0 ]]; then
+    printf 'config keys %s\n' "$action"
+    return 0
+  fi
+
+  printf 'config keys %s: %s\n' "$action" "$(printf '%s, ' "$@" | sed 's/, $//')"
+}
+
+audit_message_for_domains_change() {
+  local action="$1"
+  shift
+
+  if [[ "$#" -eq 0 ]]; then
+    printf 'domains %s\n' "$action"
+    return 0
+  fi
+
+  printf 'domains %s: %s\n' "$action" "$(printf '%s, ' "$@" | sed 's/, $//')"
+}
+
+audit_message_for_ports_change() {
+  printf 'ports %s\n' "$1"
+}
+
+audit_mkdirs() {
+  mkdir -p "$(audit_data_dir)" "$(audit_backup_dir)"
+  chmod 0750 "$(audit_data_dir)" "$(audit_backup_dir)" 2>/dev/null || true
+}
+
+audit_set_db_permissions() {
+  local db_path
+  db_path="$(audit_db_path)"
+
+  if [[ -f "$db_path" ]]; then
+    chmod 0640 "$db_path" 2>/dev/null || true
+  fi
+}
+
+audit_db_exec() {
+  local db_path
+  local sql
+
+  if [[ "$#" -eq 1 ]]; then
+    db_path="$(audit_db_path)"
+    sql="$1"
+  else
+    db_path="$1"
+    sql="$2"
+  fi
+
+  sqlite3 "$db_path" <<SQL
+.timeout $(audit_busy_timeout_ms)
+PRAGMA foreign_keys = ON;
+$sql
+SQL
+}
+
+audit_db_query_single() {
+  local db_path
+  local sql
+  local output
+
+  if [[ "$#" -eq 1 ]]; then
+    db_path="$(audit_db_path)"
+    sql="$1"
+  else
+    db_path="$1"
+    sql="$2"
+  fi
+
+  output="$(audit_db_exec "$db_path" "$sql")"
+  printf '%s\n' "$output" | awk 'NR == 1 { print; exit }'
+}
+
+audit_db_query_raw() {
+  local db_path
+  local sql
+
+  if [[ "$#" -eq 1 ]]; then
+    db_path="$(audit_db_path)"
+    sql="$1"
+  else
+    db_path="$1"
+    sql="$2"
+  fi
+
+  audit_db_exec "$db_path" "$sql"
+}
+
+audit_db_query_tsv() {
+  local db_path
+  local sql
+
+  if [[ "$#" -eq 1 ]]; then
+    db_path="$(audit_db_path)"
+    sql="$1"
+  else
+    db_path="$1"
+    sql="$2"
+  fi
+
+  sqlite3 -tabs "$db_path" <<SQL
+.timeout $(audit_busy_timeout_ms)
+PRAGMA foreign_keys = ON;
+$sql
+SQL
+}
+
+audit_db_configure_journal_mode() {
+  local desired
+  local mode
+
+  desired="$(audit_journal_mode_preference)"
+  mode="$(audit_db_query_single "PRAGMA journal_mode = ${desired};")"
+
+  if [[ "$(audit_lower "$mode")" != "$(audit_lower "$desired")" ]]; then
+    audit_warn "failed to enable ${desired}; continuing with journal mode '${mode}'"
+  fi
+
+  printf '%s\n' "$mode"
+}
+
+audit_application_id_current() {
+  audit_db_query_single "PRAGMA application_id;"
+}
+
+audit_user_version() {
+  audit_db_query_single "PRAGMA user_version;"
+}
+
+audit_journal_mode() {
+  audit_db_query_single "PRAGMA journal_mode;"
+}
+
+audit_table_exists() {
+  local table_name="$1"
+  [[ "$(audit_db_query_single "SELECT COUNT(1) FROM sqlite_master WHERE type = 'table' AND name = $(audit_sql_quote "$table_name");")" == "1" ]]
+}
+
+audit_index_exists() {
+  local index_name="$1"
+  [[ "$(audit_db_query_single "SELECT COUNT(1) FROM sqlite_master WHERE type = 'index' AND name = $(audit_sql_quote "$index_name");")" == "1" ]]
+}
+
+audit_meta_get() {
+  local key="$1"
+  audit_db_query_single "SELECT value FROM meta WHERE key = $(audit_sql_quote "$key") LIMIT 1;"
+}
+
+audit_meta_set() {
+  local key="$1"
+  local value="$2"
+
+  audit_db_exec "INSERT INTO meta(key, value) VALUES($(audit_sql_quote "$key"), $(audit_sql_quote "$value")) ON CONFLICT(key) DO UPDATE SET value = excluded.value;"
+}
+
+audit_pending_correlation_id() {
+  local app="$1"
+  audit_db_query_single "SELECT correlation_id FROM pending_deploys WHERE app = $(audit_sql_quote "$app") LIMIT 1;"
+}
+
+audit_event_json_sql() {
+  cat <<'SQL'
+json_object(
+  'id', id,
+  'ts', ts,
+  'app', app,
+  'category', category,
+  'action', action,
+  'status', status,
+  'classification', classification,
+  'source_trigger', source_trigger,
+  'source_type', source_type,
+  'image_tag', image_tag,
+  'rev', rev,
+  'actor_type', actor_type,
+  'actor_name', actor_name,
+  'correlation_id', correlation_id,
+  'message', message,
+  'meta', json(meta_json),
+  'created_at', created_at
+)
+SQL
+}
+
+audit_print_tsv_table() {
+  awk -F '\t' '
+    {
+      rows[NR] = $0
+      if (NF > max_fields) {
+        max_fields = NF
+      }
+      for (col = 1; col <= NF; col++) {
+        values[NR "," col] = $col
+        if (length($col) > widths[col]) {
+          widths[col] = length($col)
+        }
+      }
+    }
+    END {
+      for (row = 1; row <= NR; row++) {
+        for (col = 1; col <= max_fields; col++) {
+          value = values[row "," col]
+          printf "%s", value
+          if (col < max_fields) {
+            padding = widths[col] - length(value) + 2
+            for (pad = 0; pad < padding; pad++) {
+              printf " "
+            }
+          }
+        }
+        printf "\n"
+      }
+    }
+  '
+}
+
+audit_write_content() {
+  local output_path="$1"
+  local content="$2"
+
+  if [[ -n "$output_path" ]]; then
+    mkdir -p "$(dirname "$output_path")"
+    printf '%s\n' "$content" > "$output_path"
+    return 0
+  fi
+
+  printf '%s\n' "$content"
+}
+
+audit_emit_query_output() {
+  local format="$1"
+  local header_tsv="$2"
+  local table_sql="$3"
+  local jsonl_sql="$4"
+  local json_sql="$5"
+  local output_path="$6"
+  local quiet="$7"
+  local rendered
+  local body
+
+  case "$format" in
+    table)
+      body="$(audit_db_query_tsv "$table_sql")"
+      if audit_is_true "$quiet"; then
+        rendered="$body"
+      else
+        rendered="$(
+          {
+            printf '%s\n' "$header_tsv"
+            if [[ -n "$body" ]]; then
+              printf '%s\n' "$body"
+            fi
+          } | audit_print_tsv_table
+        )"
+      fi
+      ;;
+    jsonl)
+      rendered="$(audit_db_query_raw "$jsonl_sql")"
+      ;;
+    json)
+      rendered="$(audit_db_query_single "$json_sql")"
+      ;;
+    *)
+      audit_die "unsupported format: $format"
+      ;;
+  esac
+
+  audit_write_content "$output_path" "$rendered"
+}
+
+audit_insert_event() {
+  local app="$1"
+  local category="$2"
+  local action="$3"
+  local status="$4"
+  local classification="$5"
+  local source_trigger="$6"
+  local source_type="$7"
+  local image_tag="$8"
+  local rev="$9"
+  local actor_type="${10:-system}"
+  local actor_name="${11:-}"
+  local correlation_id="${12:-}"
+  local message="${13:-}"
+  local meta_json="${14:-}"
+  local ts="${15:-$(audit_now_utc)}"
+  local created_at="${16:-$ts}"
+
+  if [[ -z "$meta_json" ]]; then
+    meta_json='{}'
+  fi
+
+  audit_db_exec "INSERT INTO events (
+    ts,
+    app,
+    category,
+    action,
+    status,
+    classification,
+    source_trigger,
+    source_type,
+    image_tag,
+    rev,
+    actor_type,
+    actor_name,
+    correlation_id,
+    message,
+    meta_json,
+    created_at
+  ) VALUES (
+    $(audit_sql_quote "$ts"),
+    $(audit_sql_nullable "$app"),
+    $(audit_sql_quote "$category"),
+    $(audit_sql_quote "$action"),
+    $(audit_sql_quote "$status"),
+    $(audit_sql_nullable "$classification"),
+    $(audit_sql_quote "$source_trigger"),
+    $(audit_sql_nullable "$source_type"),
+    $(audit_sql_nullable "$image_tag"),
+    $(audit_sql_nullable "$rev"),
+    $(audit_sql_quote "$actor_type"),
+    $(audit_sql_nullable "$actor_name"),
+    $(audit_sql_nullable "$correlation_id"),
+    $(audit_sql_nullable "$message"),
+    $(audit_sql_quote "$meta_json"),
+    $(audit_sql_quote "$created_at")
+  );"
+}
+
+audit_insert_maintenance_event() {
+  local action="$1"
+  local classification="$2"
+  local message="$3"
+  local meta_json="$4"
+
+  audit_insert_event "" "maintenance" "$action" "success" "$classification" "manual" "" "" "" "system" "" "" "$message" "$meta_json"
+}
+
+audit_with_lock() {
+  local lock_file="$1"
+  shift
+  local result
+
+  mkdir -p "$(dirname "$lock_file")"
+
+  if audit_has_command flock; then
+    exec 9>"$lock_file"
+    flock -w 30 9 || audit_die "failed to acquire lock: $lock_file"
+    set +e
+    "$@"
+    result=$?
+    set -e
+    flock -u 9 || true
+    exec 9>&-
+    return "$result"
+  fi
+
+  if ! mkdir "${lock_file}.d" 2>/dev/null; then
+    audit_die "failed to acquire lock and flock is unavailable: $lock_file"
+    return 1
+  fi
+
+  set +e
+  "$@"
+  result=$?
+  set -e
+  rmdir "${lock_file}.d" || true
+  return "$result"
+}
+
+audit_migration_files() {
+  find "$AUDIT_PLUGIN_ROOT/migrations" -type f -name '[0-9][0-9][0-9]_*.sql' | LC_ALL=C sort
+}
+
+audit_latest_migration_version() {
+  local latest=0
+  local file
+  local version
+
+  while IFS= read -r file; do
+    version="$(basename "$file" | cut -d '_' -f 1)"
+    latest="$((10#$version))"
+  done < <(audit_migration_files)
+
+  printf '%s\n' "$latest"
+}
+
+audit_run_migrations_locked() {
+  local dry_run="$1"
+  local verbose="$2"
+  local db_path
+  local preexisting=0
+  local current_version=0
+  local previous_version=0
+  local current_application_id=0
+  local applied=0
+  local last_applied=0
+  local migration_file
+  local version
+  local sql
+  local migration_time
+
+  db_path="$(audit_db_path)"
+
+  if [[ -s "$db_path" ]]; then
+    preexisting=1
+    current_application_id="$(audit_application_id_current)"
+    if [[ -z "$current_application_id" ]]; then
+      audit_die "failed to read application_id from existing database"
+      return 1
+    fi
+    if [[ "$current_application_id" != "$AUDIT_APPLICATION_ID" ]]; then
+      audit_die "database application_id mismatch at $db_path: expected $AUDIT_APPLICATION_ID, got $current_application_id"
+      return 1
+    fi
+    current_version="$(audit_user_version)"
+  fi
+  previous_version="$current_version"
+
+  if audit_is_true "$dry_run"; then
+    while IFS= read -r migration_file; do
+      version="$(basename "$migration_file" | cut -d '_' -f 1)"
+      if (( 10#$version > current_version )); then
+        printf 'would apply %s\n' "$(basename "$migration_file")"
+      fi
+    done < <(audit_migration_files)
+    printf 'current_version=%s target_version=%s\n' "$current_version" "$(audit_latest_migration_version)"
+    return 0
+  fi
+
+  audit_mkdirs
+
+  if [[ ! -f "$db_path" ]]; then
+    : > "$db_path"
+  fi
+
+  audit_set_db_permissions
+  audit_db_exec "PRAGMA application_id = $AUDIT_APPLICATION_ID;"
+
+  while IFS= read -r migration_file; do
+    version="$(basename "$migration_file" | cut -d '_' -f 1)"
+    if (( 10#$version <= current_version )); then
+      continue
+    fi
+
+    sql="$(<"$migration_file")"
+
+    if audit_is_true "$verbose"; then
+      printf 'applying %s\n' "$(basename "$migration_file")"
+    fi
+
+    audit_db_exec "BEGIN IMMEDIATE;
+$sql
+PRAGMA user_version = $((10#$version));
+COMMIT;"
+
+    current_version="$((10#$version))"
+    applied=$((applied + 1))
+    last_applied="$current_version"
+  done < <(audit_migration_files)
+
+  audit_db_configure_journal_mode >/dev/null
+  audit_db_exec 'PRAGMA optimize;'
+
+  migration_time="$(audit_now_utc)"
+  audit_meta_set "plugin_version" "$(audit_plugin_version)"
+  audit_meta_set "last_optimize_at" "$migration_time"
+  if [[ "$preexisting" -eq 0 ]]; then
+    audit_meta_set "db_initialized_at" "$migration_time"
+  fi
+  if [[ "$applied" -gt 0 ]]; then
+    audit_meta_set "last_migration_at" "$migration_time"
+    audit_meta_set "last_migration_from" "$previous_version"
+    audit_meta_set "last_migration_to" "$last_applied"
+    audit_insert_maintenance_event \
+      "migrate" \
+      "maintenance_migrate" \
+      "applied ${applied} migration(s)" \
+      "{\"previous_version\":${previous_version},\"new_version\":${last_applied},\"applied_count\":${applied}}"
+  fi
+
+  printf '%s\n' "$current_version"
+}
+
+audit_run_migrations() {
+  local dry_run="${1:-false}"
+  local verbose="${2:-false}"
+
+  audit_require_sqlite
+  audit_with_lock "$(audit_lock_file)" audit_run_migrations_locked "$dry_run" "$verbose"
+}
+
+audit_pretty_json() {
+  local input="$1"
+
+  if audit_has_command python3; then
+    python3 -c 'import json, sys; print(json.dumps(json.loads(sys.argv[1]), indent=2, sort_keys=True))' "$input"
+    return 0
+  fi
+
+  printf '%s\n' "$input"
+}
+
+audit_trigger_guard() {
+  local trigger_name="$1"
+  local app_name="$2"
+  shift 2
+
+  if "$@"; then
+    return 0
+  fi
+
+  local exit_code=$?
+  audit_warn "failed to record ${trigger_name}${app_name:+ for app '$app_name'}"
+  if audit_is_true "$(audit_strict_mode)"; then
+    return "$exit_code"
+  fi
+  return 0
+}
+
+audit_extract_config_keys() {
+  local token
+  local key
+
+  for token in "$@"; do
+    key="$token"
+    if [[ "$token" == *=* ]]; then
+      key="${token%%=*}"
+    fi
+    printf '%s\n' "$key"
+  done
+}
+
+audit_print_help() {
+  cat <<'EOF'
+dokku-audit commands:
+  dokku audit
+  dokku audit:help
+  dokku audit:status
+  dokku audit:doctor
+  dokku audit:migrate [--dry-run] [--verbose]
+  dokku audit:last-deploys [--limit N] [--app APP] [--classification VALUE] [--format table|json|jsonl] [--quiet]
+  dokku audit:timeline <app> [--limit N] [--since ISO8601] [--until ISO8601] [--category VALUE] [--format table|json|jsonl] [--quiet]
+  dokku audit:recent [--limit N] [--category VALUE] [--classification VALUE] [--status VALUE] [--since ISO8601] [--format table|json|jsonl] [--quiet]
+  dokku audit:show <event-id> [--format table|json]
+  dokku audit:export [--format jsonl|json] [--app APP] [--since ISO8601] [--until ISO8601] [--output PATH]
+  dokku audit:backup [--output PATH]
+  dokku audit:vacuum
+  dokku audit:prune --older-than DAYS [--category VALUE] [--classification VALUE] [--yes]
+EOF
+}

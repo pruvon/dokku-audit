@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+set -eo pipefail
+[[ $DOKKU_TRACE ]] && set -x
+
+AUDIT_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PLUGIN_AVAILABLE_PATH="${PLUGIN_AVAILABLE_PATH:-$AUDIT_SCRIPT_DIR}"
+
+if [[ -n "${PLUGIN_CORE_AVAILABLE_PATH:-}" ]] && [[ -f "$PLUGIN_CORE_AVAILABLE_PATH/common/functions" ]]; then
+  # shellcheck source=/dev/null
+  source "$PLUGIN_CORE_AVAILABLE_PATH/common/functions"
+fi
+
+# shellcheck source=/dev/null
+source "$PLUGIN_AVAILABLE_PATH/functions"
+
+audit_handle_post_deploy() {
+  local app="$1"
+  local internal_port="${2:-}"
+  local internal_ip_address="${3:-}"
+  local image_tag="${4:-}"
+  local ts
+  local app_sql
+
+  [[ -n "$app" ]] || audit_die "missing app name"
+
+  ts="$(audit_now_utc)"
+  app_sql="$(audit_sql_quote "$app")"
+
+  audit_db_exec "BEGIN IMMEDIATE;
+INSERT INTO events (
+  ts,
+  app,
+  category,
+  action,
+  status,
+  classification,
+  source_trigger,
+  source_type,
+  image_tag,
+  rev,
+  actor_type,
+  actor_name,
+  correlation_id,
+  message,
+  meta_json,
+  created_at
+) VALUES (
+  $(audit_sql_quote "$ts"),
+  $app_sql,
+  'deploy',
+  'finish',
+  'success',
+  CASE WHEN EXISTS(SELECT 1 FROM pending_deploys WHERE app = $app_sql) THEN 'source_deploy' ELSE 'release_only' END,
+  'post-deploy',
+  (SELECT source_type FROM pending_deploys WHERE app = $app_sql LIMIT 1),
+  $(audit_sql_nullable "$image_tag"),
+  (SELECT rev FROM pending_deploys WHERE app = $app_sql LIMIT 1),
+  'system',
+  NULL,
+  (SELECT correlation_id FROM pending_deploys WHERE app = $app_sql LIMIT 1),
+  CASE WHEN EXISTS(SELECT 1 FROM pending_deploys WHERE app = $app_sql) THEN 'source deploy finished' ELSE 'release-only deploy finished' END,
+  json_patch(
+    json_object(
+      'internal_port', $(audit_sql_nullable "$internal_port"),
+      'internal_ip_address', $(audit_sql_nullable "$internal_ip_address"),
+      'image_tag', $(audit_sql_nullable "$image_tag"),
+      'source_type', (SELECT source_type FROM pending_deploys WHERE app = $app_sql LIMIT 1),
+      'rev', (SELECT rev FROM pending_deploys WHERE app = $app_sql LIMIT 1)
+    ),
+    CASE
+      WHEN EXISTS(SELECT 1 FROM pending_deploys WHERE app = $app_sql)
+        AND COALESCE((SELECT metadata_json FROM pending_deploys WHERE app = $app_sql LIMIT 1), '{}') != '{}'
+      THEN json_object('pending_metadata', json(COALESCE((SELECT metadata_json FROM pending_deploys WHERE app = $app_sql LIMIT 1), '{}')))
+      ELSE '{}'
+    END
+  ),
+  $(audit_sql_quote "$ts")
+);
+DELETE FROM pending_deploys WHERE app = $app_sql;
+COMMIT;"
+}
+
+audit_trigger_guard "post-deploy" "${1:-}" audit_handle_post_deploy "$@"

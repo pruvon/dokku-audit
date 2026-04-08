@@ -1,0 +1,2 @@
+ID  TIME                  APP    CLASSIFICATION  SOURCE_TYPE  REV           IMAGE_TAG
+5   2026-04-08T20:04:00Z  myapp  source_deploy   git-push     abcdef123456  dokku/myapp:latest

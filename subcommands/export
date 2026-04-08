@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+set -eo pipefail
+[[ $DOKKU_TRACE ]] && set -x
+
+AUDIT_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PLUGIN_AVAILABLE_PATH="${PLUGIN_AVAILABLE_PATH:-$(cd "$AUDIT_SCRIPT_DIR/.." && pwd)}"
+
+if [[ -n "${PLUGIN_CORE_AVAILABLE_PATH:-}" ]] && [[ -f "$PLUGIN_CORE_AVAILABLE_PATH/common/functions" ]]; then
+  # shellcheck source=/dev/null
+  source "$PLUGIN_CORE_AVAILABLE_PATH/common/functions"
+fi
+
+# shellcheck source=/dev/null
+source "$PLUGIN_AVAILABLE_PATH/functions"
+
+audit_require_database
+
+format="jsonl"
+app=""
+since=""
+until=""
+output_path=""
+
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    --format)
+      format="$2"
+      shift
+      ;;
+    --app)
+      app="$2"
+      shift
+      ;;
+    --since)
+      since="$2"
+      shift
+      ;;
+    --until)
+      until="$2"
+      shift
+      ;;
+    --output)
+      output_path="$2"
+      shift
+      ;;
+    *)
+      audit_die "unknown argument: $1"
+      exit 1
+      ;;
+  esac
+  shift
+done
+
+where_clause="1 = 1"
+if [[ -n "$app" ]]; then
+  where_clause+=" AND app = $(audit_sql_quote "$app")"
+fi
+if [[ -n "$since" ]]; then
+  where_clause+=" AND ts >= $(audit_sql_quote "$since")"
+fi
+if [[ -n "$until" ]]; then
+  where_clause+=" AND ts <= $(audit_sql_quote "$until")"
+fi
+
+event_json_sql="$(audit_event_json_sql)"
+if [[ "$format" == "jsonl" ]]; then
+  audit_write_content "$output_path" "$(audit_db_query_raw "SELECT ${event_json_sql} FROM events WHERE ${where_clause} ORDER BY ts DESC;")"
+  exit 0
+fi
+
+if [[ "$format" == "json" ]]; then
+  events_json="$(audit_db_query_single "SELECT COALESCE(json_group_array(json(event_json)), '[]') FROM (SELECT ${event_json_sql} AS event_json FROM events WHERE ${where_clause} ORDER BY ts DESC);")"
+  audit_write_content "$output_path" "{\"plugin\":\"dokku-audit\",\"exported_at\":$(audit_json_string "$(audit_now_utc)"),\"events\":${events_json}}"
+  exit 0
+fi
+
+audit_die "unsupported format: $format"

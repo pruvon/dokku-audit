@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+set -eo pipefail
+[[ $DOKKU_TRACE ]] && set -x
+
+AUDIT_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PLUGIN_AVAILABLE_PATH="${PLUGIN_AVAILABLE_PATH:-$AUDIT_SCRIPT_DIR}"
+
+if [[ -n "${PLUGIN_CORE_AVAILABLE_PATH:-}" ]] && [[ -f "$PLUGIN_CORE_AVAILABLE_PATH/common/functions" ]]; then
+  # shellcheck source=/dev/null
+  source "$PLUGIN_CORE_AVAILABLE_PATH/common/functions"
+fi
+
+# shellcheck source=/dev/null
+source "$PLUGIN_AVAILABLE_PATH/functions"
+
+audit_handle_post_extract() {
+  local app="$1"
+  local tmp_work_dir="${2:-}"
+  local rev="${3:-}"
+  local ts
+
+  [[ -n "$app" ]] || audit_die "missing app name"
+
+  ts="$(audit_now_utc)"
+  audit_db_exec "BEGIN IMMEDIATE;
+UPDATE pending_deploys
+SET
+  rev = COALESCE($(audit_sql_nullable "$rev"), rev),
+  updated_ts = $(audit_sql_quote "$ts")
+WHERE app = $(audit_sql_quote "$app");
+INSERT INTO events (
+  ts,
+  app,
+  category,
+  action,
+  status,
+  classification,
+  source_trigger,
+  source_type,
+  image_tag,
+  rev,
+  actor_type,
+  actor_name,
+  correlation_id,
+  message,
+  meta_json,
+  created_at
+) VALUES (
+  $(audit_sql_quote "$ts"),
+  $(audit_sql_quote "$app"),
+  'deploy',
+  'extract',
+  'success',
+  'source_extracted',
+  'post-extract',
+  (SELECT source_type FROM pending_deploys WHERE app = $(audit_sql_quote "$app") LIMIT 1),
+  NULL,
+  $(audit_sql_nullable "$rev"),
+  'system',
+  NULL,
+  (SELECT correlation_id FROM pending_deploys WHERE app = $(audit_sql_quote "$app") LIMIT 1),
+  'source extracted',
+  json_object('rev', $(audit_sql_nullable "$rev")),
+  $(audit_sql_quote "$ts")
+);
+COMMIT;"
+
+  : "$tmp_work_dir"
+}
+
+audit_trigger_guard "post-extract" "${1:-}" audit_handle_post_extract "$@"

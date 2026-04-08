@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+set -eo pipefail
+[[ $DOKKU_TRACE ]] && set -x
+
+AUDIT_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PLUGIN_AVAILABLE_PATH="${PLUGIN_AVAILABLE_PATH:-$(cd "$AUDIT_SCRIPT_DIR/.." && pwd)}"
+
+if [[ -n "${PLUGIN_CORE_AVAILABLE_PATH:-}" ]] && [[ -f "$PLUGIN_CORE_AVAILABLE_PATH/common/functions" ]]; then
+  # shellcheck source=/dev/null
+  source "$PLUGIN_CORE_AVAILABLE_PATH/common/functions"
+fi
+
+# shellcheck source=/dev/null
+source "$PLUGIN_AVAILABLE_PATH/functions"
+
+issues=()
+oks=()
+db_path="$(audit_db_path)"
+
+if audit_has_command sqlite3; then
+  oks+=("sqlite3 executable available")
+else
+  issues+=("sqlite3 executable is missing")
+fi
+
+if [[ -f "$db_path" && -r "$db_path" ]]; then
+  oks+=("database accessible at $db_path")
+else
+  issues+=("database is not accessible at $db_path")
+fi
+
+if [[ -f "$db_path" && -r "$db_path" ]]; then
+  app_id="$(audit_application_id_current 2>/dev/null || true)"
+  if [[ "$app_id" == "$AUDIT_APPLICATION_ID" ]]; then
+    oks+=("application_id matches $AUDIT_APPLICATION_ID")
+  else
+    issues+=("application_id mismatch: expected $AUDIT_APPLICATION_ID, got ${app_id:-unreadable}")
+  fi
+
+  user_version="$(audit_user_version 2>/dev/null || true)"
+  target_version="$(audit_latest_migration_version)"
+  if [[ "$user_version" =~ ^[0-9]+$ ]] && (( user_version >= 1 )) && (( user_version <= target_version )); then
+    oks+=("schema version is $user_version")
+  else
+    issues+=("unexpected schema version: ${user_version:-unreadable}")
+  fi
+
+  for table_name in events pending_deploys meta; do
+    if audit_table_exists "$table_name"; then
+      oks+=("table present: $table_name")
+    else
+      issues+=("missing table: $table_name")
+    fi
+  done
+
+  for index_name in idx_events_ts idx_events_app_ts idx_events_category_ts idx_events_classification_ts idx_events_rev idx_events_correlation_id; do
+    if audit_index_exists "$index_name"; then
+      oks+=("index present: $index_name")
+    else
+      issues+=("missing index: $index_name")
+    fi
+  done
+
+  journal_mode="$(audit_journal_mode 2>/dev/null || true)"
+  if [[ -n "$journal_mode" ]]; then
+    oks+=("journal mode: $journal_mode")
+  else
+    issues+=("journal mode could not be determined")
+  fi
+
+  integrity_check="$(audit_db_query_single 'PRAGMA integrity_check;' 2>/dev/null || true)"
+  if [[ "$integrity_check" == "ok" ]]; then
+    oks+=("integrity_check returned ok")
+  else
+    issues+=("integrity_check failed: ${integrity_check:-unreadable}")
+  fi
+
+  stale_pending_count="$(audit_db_query_single "SELECT COUNT(1) FROM pending_deploys WHERE first_seen_ts < strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-$(audit_pending_stale_threshold_seconds) seconds');" 2>/dev/null || true)"
+  if [[ "$stale_pending_count" =~ ^[0-9]+$ ]] && (( stale_pending_count == 0 )); then
+    oks+=("no stale pending deploy rows")
+  else
+    issues+=("stale pending deploy rows detected: ${stale_pending_count:-unreadable}")
+  fi
+fi
+
+for ok_item in "${oks[@]}"; do
+  printf 'ok: %s\n' "$ok_item"
+done
+
+for issue_item in "${issues[@]}"; do
+  printf 'issue: %s\n' "$issue_item"
+done
+
+if [[ "${#issues[@]}" -gt 0 ]]; then
+  exit 1
+fi

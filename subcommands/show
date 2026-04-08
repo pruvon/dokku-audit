@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+set -eo pipefail
+[[ $DOKKU_TRACE ]] && set -x
+
+AUDIT_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PLUGIN_AVAILABLE_PATH="${PLUGIN_AVAILABLE_PATH:-$(cd "$AUDIT_SCRIPT_DIR/.." && pwd)}"
+
+if [[ -n "${PLUGIN_CORE_AVAILABLE_PATH:-}" ]] && [[ -f "$PLUGIN_CORE_AVAILABLE_PATH/common/functions" ]]; then
+  # shellcheck source=/dev/null
+  source "$PLUGIN_CORE_AVAILABLE_PATH/common/functions"
+fi
+
+# shellcheck source=/dev/null
+source "$PLUGIN_AVAILABLE_PATH/functions"
+
+audit_require_database
+
+event_id="${1:-}"
+[[ -n "$event_id" ]] || audit_die "usage: dokku audit:show <event-id> [--format table|json]"
+shift || true
+
+format="table"
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    --format)
+      format="$2"
+      shift
+      ;;
+    *)
+      audit_die "unknown argument: $1"
+      exit 1
+      ;;
+  esac
+  shift
+done
+
+[[ "$event_id" =~ ^[0-9]+$ ]] || audit_die "event id must be numeric"
+
+event_json_sql="$(audit_event_json_sql)"
+json_output="$(audit_db_query_single "SELECT ${event_json_sql} FROM events WHERE id = ${event_id} LIMIT 1;")"
+[[ -n "$json_output" ]] || audit_die "event not found: $event_id"
+
+if [[ "$format" == "json" ]]; then
+  printf '%s\n' "$json_output"
+  exit 0
+fi
+
+if audit_has_command python3; then
+  python3 - "$json_output" <<'PY'
+import json
+import sys
+
+payload = json.loads(sys.argv[1])
+meta = json.dumps(payload.get("meta", {}), indent=2, sort_keys=True)
+mapping = [
+    ("id", payload.get("id")),
+    ("ts", payload.get("ts")),
+    ("app", payload.get("app") or "-"),
+    ("category", payload.get("category")),
+    ("action", payload.get("action")),
+    ("status", payload.get("status")),
+    ("classification", payload.get("classification") or "-"),
+    ("source trigger", payload.get("source_trigger")),
+    ("source type", payload.get("source_type") or "-"),
+    ("image tag", payload.get("image_tag") or "-"),
+    ("rev", payload.get("rev") or "-"),
+    ("actor type", payload.get("actor_type")),
+    ("actor name", payload.get("actor_name") or "-"),
+    ("correlation id", payload.get("correlation_id") or "-"),
+    ("message", payload.get("message") or "-"),
+    ("created at", payload.get("created_at")),
+]
+
+for key, value in mapping:
+    print(f"{key}: {value}")
+print("meta_json:")
+print(meta)
+PY
+  exit 0
+fi
+
+printf '%s\n' "$json_output"

@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -eo pipefail
+[[ $DOKKU_TRACE ]] && set -x
+
+AUDIT_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PLUGIN_AVAILABLE_PATH="${PLUGIN_AVAILABLE_PATH:-$AUDIT_SCRIPT_DIR}"
+
+if [[ -n "${PLUGIN_CORE_AVAILABLE_PATH:-}" ]] && [[ -f "$PLUGIN_CORE_AVAILABLE_PATH/common/functions" ]]; then
+  # shellcheck source=/dev/null
+  source "$PLUGIN_CORE_AVAILABLE_PATH/common/functions"
+fi
+
+# shellcheck source=/dev/null
+source "$PLUGIN_AVAILABLE_PATH/functions"
+
+audit_handle_post_domains_update() {
+  local app="$1"
+  local action="$2"
+  shift 2 || true
+  local domains=("$@")
+  local message
+  local meta_json
+
+  [[ -n "$app" ]] || audit_die "missing app name"
+  [[ -n "$action" ]] || audit_die "missing domains action"
+
+  message="$(audit_message_for_domains_change "$action" "${domains[@]}")"
+  meta_json="{\"domains\":$(audit_json_array_from_args "${domains[@]}") }"
+
+  audit_insert_event "$app" "domains" "$action" "success" "domains_change" "post-domains-update" "" "" "" "system" "" "" "$message" "$meta_json"
+}
+
+audit_trigger_guard "post-domains-update" "${1:-}" audit_handle_post_domains_update "$@"
