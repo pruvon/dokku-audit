@@ -61,7 +61,7 @@ The install process creates the plugin data directory and initializes the SQLite
 When you update the plugin, run:
 
 ```bash
-dokku plugin:update dokku-audit
+dokku plugin:update audit
 dokku audit:status
 ```
 
@@ -76,13 +76,14 @@ dokku audit:migrate
 Remove the plugin from Dokku:
 
 ```bash
-dokku plugin:uninstall dokku-audit
+sudo dokku plugin:uninstall audit
 ```
 
 Important:
 
 - Uninstall does not delete the audit database automatically.
 - Audit data is intentionally preserved.
+- Dokku installs this repository under the plugin name `audit`, so plugin lifecycle commands use `audit`.
 
 If you also want to delete stored audit data, remove it manually:
 

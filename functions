@@ -13,6 +13,8 @@ AUDIT_DEFAULT_BUSY_TIMEOUT_MS="${DOKKU_AUDIT_BUSY_TIMEOUT_MS:-5000}"
 AUDIT_DEFAULT_PENDING_STALE_THRESHOLD_SECONDS="${DOKKU_AUDIT_PENDING_STALE_THRESHOLD_SECONDS:-86400}"
 AUDIT_DEFAULT_STRICT_MODE="${DOKKU_AUDIT_STRICT_MODE:-false}"
 AUDIT_DEFAULT_JOURNAL_MODE="${DOKKU_AUDIT_JOURNAL_MODE:-WAL}"
+AUDIT_DEFAULT_RUNTIME_USER="${DOKKU_AUDIT_RUNTIME_USER:-dokku}"
+AUDIT_DEFAULT_RUNTIME_GROUP="${DOKKU_AUDIT_RUNTIME_GROUP:-$AUDIT_DEFAULT_RUNTIME_USER}"
 AUDIT_APPLICATION_ID="1145132356"
 
 audit_plugin_version() {
@@ -56,6 +58,22 @@ audit_journal_mode_preference() {
   printf '%s\n' "$AUDIT_DEFAULT_JOURNAL_MODE"
 }
 
+audit_runtime_user() {
+  printf '%s\n' "$AUDIT_DEFAULT_RUNTIME_USER"
+}
+
+audit_runtime_group() {
+  printf '%s\n' "$AUDIT_DEFAULT_RUNTIME_GROUP"
+}
+
+audit_runtime_plugin_name() {
+  basename "$AUDIT_PLUGIN_ROOT"
+}
+
+audit_dokku_plugin_name() {
+  printf '%s\n' "${AUDIT_PLUGIN_NAME#dokku-}"
+}
+
 audit_log() {
   printf '%s\n' "$*"
 }
@@ -75,6 +93,10 @@ audit_die() {
 
 audit_has_command() {
   command -v "$1" >/dev/null 2>&1
+}
+
+audit_has_user() {
+  id -u "$1" >/dev/null 2>&1
 }
 
 audit_is_true() {
@@ -237,16 +259,61 @@ audit_message_for_ports_change() {
 }
 
 audit_mkdirs() {
-  mkdir -p "$(audit_data_dir)" "$(audit_backup_dir)"
-  chmod 0750 "$(audit_data_dir)" "$(audit_backup_dir)" 2>/dev/null || true
+  local data_dir
+  local backup_dir
+  local runtime_user
+  local runtime_group
+
+  data_dir="$(audit_data_dir)"
+  backup_dir="$(audit_backup_dir)"
+  runtime_user="$(audit_runtime_user)"
+  runtime_group="$(audit_runtime_group)"
+
+  mkdir -p "$data_dir" "$backup_dir"
+
+  if audit_has_user "$runtime_user"; then
+    chown "$runtime_user:$runtime_group" "$data_dir" "$backup_dir" 2>/dev/null || chown "$runtime_user" "$data_dir" "$backup_dir" 2>/dev/null || true
+    chmod 0770 "$data_dir" "$backup_dir" 2>/dev/null || true
+    return 0
+  fi
+
+  chmod 0750 "$data_dir" "$backup_dir" 2>/dev/null || true
 }
 
 audit_set_db_permissions() {
   local db_path
+  local runtime_user
+  local runtime_group
+
   db_path="$(audit_db_path)"
+  runtime_user="$(audit_runtime_user)"
+  runtime_group="$(audit_runtime_group)"
 
   if [[ -f "$db_path" ]]; then
-    chmod 0640 "$db_path" 2>/dev/null || true
+    if audit_has_user "$runtime_user"; then
+      chown "$runtime_user:$runtime_group" "$db_path" 2>/dev/null || chown "$runtime_user" "$db_path" 2>/dev/null || true
+      chmod 0660 "$db_path" 2>/dev/null || true
+    else
+      chmod 0640 "$db_path" 2>/dev/null || true
+    fi
+  fi
+
+  if [[ -f "${db_path}-wal" ]]; then
+    if audit_has_user "$runtime_user"; then
+      chown "$runtime_user:$runtime_group" "${db_path}-wal" 2>/dev/null || chown "$runtime_user" "${db_path}-wal" 2>/dev/null || true
+      chmod 0660 "${db_path}-wal" 2>/dev/null || true
+    else
+      chmod 0640 "${db_path}-wal" 2>/dev/null || true
+    fi
+  fi
+
+  if [[ -f "${db_path}-shm" ]]; then
+    if audit_has_user "$runtime_user"; then
+      chown "$runtime_user:$runtime_group" "${db_path}-shm" 2>/dev/null || chown "$runtime_user" "${db_path}-shm" 2>/dev/null || true
+      chmod 0660 "${db_path}-shm" 2>/dev/null || true
+    else
+      chmod 0640 "${db_path}-shm" 2>/dev/null || true
+    fi
   fi
 }
 

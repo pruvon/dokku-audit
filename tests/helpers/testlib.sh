@@ -18,6 +18,18 @@ setup_test_env() {
   unset DOKKU_AUDIT_CORRELATION_ID
   unset DOKKU_AUDIT_EPOCH_MS
   unset DOKKU_AUDIT_RANDOM_HEX
+  unset DOKKU_AUDIT_RUNTIME_USER
+  unset DOKKU_AUDIT_RUNTIME_GROUP
+}
+
+setup_test_env_with_runtime_user() {
+  local name="$1"
+  local runtime_user="$2"
+  local runtime_group="${3:-$runtime_user}"
+
+  setup_test_env "$name"
+  export DOKKU_AUDIT_RUNTIME_USER="$runtime_user"
+  export DOKKU_AUDIT_RUNTIME_GROUP="$runtime_group"
 }
 
 fail() {

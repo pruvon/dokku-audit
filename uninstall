@@ -7,7 +7,7 @@ AUDIT_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 source "$AUDIT_SCRIPT_DIR/bootstrap"
 
-if [[ -n "${1:-}" ]] && [[ "$1" != "$AUDIT_PLUGIN_NAME" ]]; then
+if [[ -n "${1:-}" ]] && [[ "$1" != "$AUDIT_PLUGIN_NAME" ]] && [[ "$1" != "$(audit_runtime_plugin_name)" ]] && [[ "$1" != "$(audit_dokku_plugin_name)" ]]; then
   audit_die "unexpected plugin name '$1'"
 fi
 
