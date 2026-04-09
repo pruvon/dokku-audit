@@ -74,6 +74,26 @@ audit_dokku_plugin_name() {
   printf '%s\n' "${AUDIT_PLUGIN_NAME#dokku-}"
 }
 
+audit_expected_command_name() {
+  local subcommand="$1"
+  local namespace
+
+  namespace="$(audit_dokku_plugin_name)"
+  if [[ "$subcommand" == "default" ]]; then
+    printf '%s\n' "$namespace"
+    return 0
+  fi
+
+  printf '%s:%s\n' "$namespace" "$subcommand"
+}
+
+audit_is_command_invocation() {
+  local subcommand="$1"
+  local actual="${2:-}"
+
+  [[ "$actual" == "$(audit_expected_command_name "$subcommand")" ]]
+}
+
 audit_log() {
   printf '%s\n' "$*"
 }

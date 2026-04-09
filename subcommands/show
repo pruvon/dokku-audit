@@ -9,6 +9,10 @@ source "$AUDIT_SCRIPT_DIR/../bootstrap"
 
 audit_require_database
 
+if audit_is_command_invocation "show" "${1:-}"; then
+  shift
+fi
+
 event_id="${1:-}"
 [[ -n "$event_id" ]] || audit_die "usage: dokku audit:show <event-id> [--format table|json]"
 shift || true

@@ -9,6 +9,10 @@ source "$AUDIT_SCRIPT_DIR/../bootstrap"
 
 audit_require_database
 
+if audit_is_command_invocation "backup" "${1:-}"; then
+  shift
+fi
+
 output_path=""
 while [[ "$#" -gt 0 ]]; do
   case "$1" in

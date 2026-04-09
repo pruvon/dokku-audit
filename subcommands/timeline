@@ -9,6 +9,10 @@ source "$AUDIT_SCRIPT_DIR/../bootstrap"
 
 audit_require_database
 
+if audit_is_command_invocation "timeline" "${1:-}"; then
+  shift
+fi
+
 app="${1:-}"
 [[ -n "$app" ]] || audit_die "usage: dokku audit:timeline <app> [options]"
 shift || true

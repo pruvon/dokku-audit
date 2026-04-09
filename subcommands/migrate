@@ -7,6 +7,10 @@ AUDIT_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 source "$AUDIT_SCRIPT_DIR/../bootstrap"
 
+if audit_is_command_invocation "migrate" "${1:-}"; then
+  shift
+fi
+
 dry_run=false
 verbose=false
 

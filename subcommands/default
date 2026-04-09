@@ -5,4 +5,11 @@ set -eo pipefail
 AUDIT_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 AUDIT_PLUGIN_ROOT="$(cd "$AUDIT_SCRIPT_DIR/.." && pwd)"
 
+# shellcheck source=/dev/null
+source "$AUDIT_PLUGIN_ROOT/bootstrap"
+
+if audit_is_command_invocation "default" "${1:-}"; then
+  shift
+fi
+
 exec "$AUDIT_PLUGIN_ROOT/subcommands/status" "$@"

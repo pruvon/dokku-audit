@@ -9,6 +9,10 @@ source "$AUDIT_SCRIPT_DIR/../bootstrap"
 
 audit_require_database
 
+if audit_is_command_invocation "prune" "${1:-}"; then
+  shift
+fi
+
 older_than=""
 category=""
 classification=""
