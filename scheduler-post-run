@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -eo pipefail
+[[ $DOKKU_TRACE ]] && set -x
+
+AUDIT_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# shellcheck source=/dev/null
+source "$AUDIT_SCRIPT_DIR/bootstrap"
+
+audit_handle_scheduler_post_run() {
+  local scheduler="${1:-}"
+  local app="${2:-}"
+  local container_id="${3:-}"
+
+  : "$scheduler"
+  [[ -n "$app" ]] || audit_die "missing app name"
+  [[ -n "$container_id" ]] || audit_die "missing container id"
+
+  audit_attach_container_id_to_pending_run_event "$app" "$container_id" "$(audit_now_utc)"
+}
+
+audit_trigger_guard "scheduler-post-run" "${2:-}" audit_handle_scheduler_post_run "$@"

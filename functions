@@ -11,6 +11,7 @@ AUDIT_PLUGIN_NAME="dokku-audit"
 AUDIT_DEFAULT_DATA_DIR="/var/lib/dokku/data/dokku-audit"
 AUDIT_DEFAULT_BUSY_TIMEOUT_MS="${DOKKU_AUDIT_BUSY_TIMEOUT_MS:-5000}"
 AUDIT_DEFAULT_PENDING_STALE_THRESHOLD_SECONDS="${DOKKU_AUDIT_PENDING_STALE_THRESHOLD_SECONDS:-86400}"
+AUDIT_DEFAULT_COMMAND_MATCH_WINDOW_SECONDS="${DOKKU_AUDIT_COMMAND_MATCH_WINDOW_SECONDS:-120}"
 AUDIT_DEFAULT_STRICT_MODE="${DOKKU_AUDIT_STRICT_MODE:-false}"
 AUDIT_DEFAULT_JOURNAL_MODE="${DOKKU_AUDIT_JOURNAL_MODE:-WAL}"
 AUDIT_DEFAULT_RUNTIME_USER="${DOKKU_AUDIT_RUNTIME_USER:-dokku}"
@@ -48,6 +49,10 @@ audit_busy_timeout_ms() {
 
 audit_pending_stale_threshold_seconds() {
   printf '%s\n' "$AUDIT_DEFAULT_PENDING_STALE_THRESHOLD_SECONDS"
+}
+
+audit_command_match_window_seconds() {
+  printf '%s\n' "$AUDIT_DEFAULT_COMMAND_MATCH_WINDOW_SECONDS"
 }
 
 audit_strict_mode() {
@@ -237,6 +242,399 @@ audit_json_array_from_args() {
     audit_json_string "$item"
   done
   printf ']'
+}
+
+audit_hostname() {
+  if [[ -n "${DOKKU_AUDIT_HOSTNAME:-}" ]]; then
+    printf '%s\n' "$DOKKU_AUDIT_HOSTNAME"
+    return 0
+  fi
+
+  hostname 2>/dev/null || true
+}
+
+audit_join_args() {
+  local joined=""
+  local item
+
+  for item in "$@"; do
+    if [[ -n "$joined" ]]; then
+      joined+=" "
+    fi
+    joined+="$item"
+  done
+
+  printf '%s\n' "$joined"
+}
+
+audit_prefixed_dokku_command_text() {
+  local command_text
+
+  command_text="$(audit_join_args "$@")"
+  if [[ -z "$command_text" ]]; then
+    printf 'dokku\n'
+    return 0
+  fi
+
+  printf 'dokku %s\n' "$command_text"
+}
+
+audit_actor_name_from_ssh_context() {
+  local ssh_name="${1:-}"
+  local ssh_user="${2:-}"
+
+  if [[ -n "$ssh_name" ]]; then
+    printf '%s\n' "$ssh_name"
+    return 0
+  fi
+
+  printf '%s\n' "$ssh_user"
+}
+
+audit_actor_source_from_ssh_context() {
+  local ssh_name="${1:-}"
+  local ssh_user="${2:-}"
+
+  if [[ -n "$ssh_name" ]]; then
+    printf 'SSH_NAME\n'
+    return 0
+  fi
+
+  if [[ -n "$ssh_user" ]]; then
+    printf 'SSH_USER\n'
+    return 0
+  fi
+
+  printf '\n'
+}
+
+audit_actor_type_from_name() {
+  if [[ -n "${1:-}" ]]; then
+    printf 'user\n'
+    return 0
+  fi
+
+  printf 'system\n'
+}
+
+audit_command_tokens_lines() {
+  local -a split_tokens=()
+
+  if [[ "$#" -eq 0 ]]; then
+    return 0
+  fi
+
+  if [[ "$#" -eq 1 ]] && [[ -n "$1" ]] && [[ "$1" == *" "* ]]; then
+    IFS=' ' read -r -a split_tokens <<< "$1"
+    printf '%s\n' "${split_tokens[@]}"
+    return 0
+  fi
+
+  printf '%s\n' "$@"
+}
+
+audit_redact_assignment_token() {
+  local token="$1"
+
+  if [[ "$token" != *=* ]]; then
+    printf '%s\n' "$token"
+    return 0
+  fi
+
+  printf '%s=[REDACTED]\n' "${token%%=*}"
+}
+
+AUDIT_PARSED_TOKENS=()
+AUDIT_PARSED_TRAILING_TOKENS=()
+AUDIT_PARSED_COMMAND_ARGS=()
+AUDIT_PARSED_MATCH_ARGS=()
+AUDIT_PARSED_GLOBAL_APP=""
+AUDIT_PARSED_SUBCOMMAND=""
+AUDIT_PARSED_APP=""
+AUDIT_PARSED_CONTAINER_TYPE=""
+AUDIT_PARSED_CONTAINER_ID=""
+
+audit_parse_run_arguments() {
+  local global_app="$1"
+  shift || true
+  local -a remaining=("$@")
+  local token
+  local idx=0
+
+  AUDIT_PARSED_APP="$global_app"
+  AUDIT_PARSED_COMMAND_ARGS=()
+  AUDIT_PARSED_MATCH_ARGS=()
+
+  while [[ "$idx" -lt "${#remaining[@]}" ]]; do
+    token="${remaining[$idx]}"
+    case "$token" in
+      -e|--env|--ttl-seconds)
+        idx=$((idx + 2))
+        continue
+        ;;
+      --env=*|--ttl-seconds=*|--no-tty|--force-tty)
+        idx=$((idx + 1))
+        continue
+        ;;
+      --)
+        idx=$((idx + 1))
+        break
+        ;;
+      -*)
+        idx=$((idx + 1))
+        continue
+        ;;
+      *)
+        if [[ -z "$AUDIT_PARSED_APP" ]]; then
+          AUDIT_PARSED_APP="$token"
+          idx=$((idx + 1))
+          continue
+        fi
+        break
+        ;;
+    esac
+  done
+
+  AUDIT_PARSED_COMMAND_ARGS=("${remaining[@]:$idx}")
+  AUDIT_PARSED_MATCH_ARGS=("${AUDIT_PARSED_COMMAND_ARGS[@]}")
+}
+
+audit_parse_enter_arguments() {
+  local global_app="$1"
+  shift || true
+  local -a remaining=("$@")
+  local token
+  local idx=0
+
+  AUDIT_PARSED_APP="$global_app"
+  AUDIT_PARSED_CONTAINER_TYPE=""
+  AUDIT_PARSED_CONTAINER_ID=""
+  AUDIT_PARSED_COMMAND_ARGS=()
+  AUDIT_PARSED_MATCH_ARGS=()
+
+  if [[ -z "$AUDIT_PARSED_APP" ]] && [[ "${#remaining[@]}" -gt 0 ]]; then
+    AUDIT_PARSED_APP="${remaining[0]}"
+    idx=1
+  fi
+
+  AUDIT_PARSED_MATCH_ARGS=("${remaining[@]:$idx}")
+
+  if [[ "$idx" -lt "${#remaining[@]}" ]]; then
+    token="${remaining[$idx]}"
+    case "$token" in
+      --container-id)
+        if [[ $((idx + 1)) -lt ${#remaining[@]} ]]; then
+          AUDIT_PARSED_CONTAINER_ID="${remaining[$((idx + 1))]}"
+        fi
+        idx=$((idx + 2))
+        ;;
+      --container-id=*)
+        AUDIT_PARSED_CONTAINER_ID="${token#--container-id=}"
+        idx=$((idx + 1))
+        ;;
+      --)
+        idx=$((idx + 1))
+        ;;
+      -*)
+        idx=$((idx + 1))
+        ;;
+      *)
+        AUDIT_PARSED_CONTAINER_TYPE="$token"
+        idx=$((idx + 1))
+        ;;
+    esac
+  fi
+
+  AUDIT_PARSED_COMMAND_ARGS=("${remaining[@]:$idx}")
+}
+
+audit_parse_dokku_invocation() {
+  local -a tokens=("$@")
+  local -a remaining=()
+  local token
+  local idx=0
+
+  AUDIT_PARSED_TOKENS=("${tokens[@]}")
+  AUDIT_PARSED_TRAILING_TOKENS=()
+  AUDIT_PARSED_COMMAND_ARGS=()
+  AUDIT_PARSED_MATCH_ARGS=()
+  AUDIT_PARSED_GLOBAL_APP=""
+  AUDIT_PARSED_SUBCOMMAND=""
+  AUDIT_PARSED_APP=""
+  AUDIT_PARSED_CONTAINER_TYPE=""
+  AUDIT_PARSED_CONTAINER_ID=""
+
+  while [[ "$idx" -lt "${#tokens[@]}" ]]; do
+    token="${tokens[$idx]}"
+    case "$token" in
+      --app)
+        if [[ $((idx + 1)) -lt ${#tokens[@]} ]]; then
+          AUDIT_PARSED_GLOBAL_APP="${tokens[$((idx + 1))]}"
+        fi
+        idx=$((idx + 2))
+        continue
+        ;;
+      --app=*)
+        AUDIT_PARSED_GLOBAL_APP="${token#--app=}"
+        idx=$((idx + 1))
+        continue
+        ;;
+      --label|--remote)
+        idx=$((idx + 2))
+        continue
+        ;;
+      --label=*|--remote=*|--quiet|--trace|--force|--global)
+        idx=$((idx + 1))
+        continue
+        ;;
+      *)
+        AUDIT_PARSED_SUBCOMMAND="$token"
+        idx=$((idx + 1))
+        break
+        ;;
+    esac
+  done
+
+  remaining=("${tokens[@]:$idx}")
+  AUDIT_PARSED_TRAILING_TOKENS=("${remaining[@]}")
+
+  case "$AUDIT_PARSED_SUBCOMMAND" in
+    run|run:detached)
+      audit_parse_run_arguments "$AUDIT_PARSED_GLOBAL_APP" "${remaining[@]}"
+      ;;
+    enter)
+      audit_parse_enter_arguments "$AUDIT_PARSED_GLOBAL_APP" "${remaining[@]}"
+      ;;
+    *)
+      AUDIT_PARSED_APP="$AUDIT_PARSED_GLOBAL_APP"
+      AUDIT_PARSED_COMMAND_ARGS=("${remaining[@]}")
+      AUDIT_PARSED_MATCH_ARGS=("${remaining[@]}")
+      ;;
+  esac
+}
+
+audit_sanitized_dokku_command_tokens_lines() {
+  local -a tokens=("$@")
+  local -a sanitized=()
+  local subcommand=""
+  local token
+  local next_token
+  local command_seen=0
+  local idx=0
+
+  audit_parse_dokku_invocation "${tokens[@]}"
+  subcommand="$AUDIT_PARSED_SUBCOMMAND"
+
+  while [[ "$idx" -lt "${#tokens[@]}" ]]; do
+    token="${tokens[$idx]}"
+
+    if [[ "$command_seen" -eq 0 ]]; then
+      sanitized+=("$token")
+      if [[ -n "$subcommand" ]] && [[ "$token" == "$subcommand" ]]; then
+        command_seen=1
+      fi
+      idx=$((idx + 1))
+      continue
+    fi
+
+    case "$subcommand" in
+      config:set|config:set-global)
+        sanitized+=("$(audit_redact_assignment_token "$token")")
+        idx=$((idx + 1))
+        ;;
+      run|run:detached)
+        case "$token" in
+          -e|--env)
+            sanitized+=("$token")
+            idx=$((idx + 1))
+            if [[ "$idx" -lt "${#tokens[@]}" ]]; then
+              next_token="${tokens[$idx]}"
+              if [[ "$next_token" == *=* ]]; then
+                sanitized+=("$(audit_redact_assignment_token "$next_token")")
+              else
+                sanitized+=("$next_token")
+              fi
+            fi
+            idx=$((idx + 1))
+            ;;
+          --env=*)
+            next_token="${token#--env=}"
+            if [[ "$next_token" == *=* ]]; then
+              sanitized+=("--env=$(audit_redact_assignment_token "$next_token")")
+            else
+              sanitized+=("$token")
+            fi
+            idx=$((idx + 1))
+            ;;
+          *)
+            sanitized+=("$token")
+            idx=$((idx + 1))
+            ;;
+        esac
+        ;;
+      *)
+        sanitized+=("$token")
+        idx=$((idx + 1))
+        ;;
+    esac
+  done
+
+  printf '%s\n' "${sanitized[@]}"
+}
+
+audit_sanitized_dokku_command_text() {
+  local -a sanitized_tokens=()
+  local token
+
+  while IFS= read -r token; do
+    sanitized_tokens+=("$token")
+  done < <(audit_sanitized_dokku_command_tokens_lines "$@")
+
+  audit_join_args "${sanitized_tokens[@]}"
+}
+
+audit_command_event_meta_json() {
+  local actor_source="$1"
+  local command_text="$2"
+  local subcommand="$3"
+  local args_json="$4"
+  local container_type="$5"
+  local container_id="$6"
+  local hostname="$7"
+  local success_hint="$8"
+
+  if [[ -z "$args_json" ]]; then
+    args_json='[]'
+  fi
+
+  printf '{"actor_source":%s,"command":%s,"subcommand":%s,"args":%s,"container_type":%s,"container_id":%s,"hostname":%s,"success_hint":%s}' \
+    "$(audit_json_or_null "$actor_source")" \
+    "$(audit_json_or_null "$command_text")" \
+    "$(audit_json_or_null "$subcommand")" \
+    "$args_json" \
+    "$(audit_json_or_null "$container_type")" \
+    "$(audit_json_or_null "$container_id")" \
+    "$(audit_json_or_null "$hostname")" \
+    "$(audit_json_or_null "$success_hint")"
+}
+
+audit_message_for_command_invoke() {
+  local subcommand="${1:-}"
+
+  if [[ -n "$subcommand" ]]; then
+    printf 'dokku %s invoked\n' "$subcommand"
+    return 0
+  fi
+
+  printf 'dokku command invoked\n'
+}
+
+audit_message_for_run() {
+  printf 'dokku run scheduled\n'
+}
+
+audit_message_for_enter() {
+  printf 'dokku enter requested\n'
 }
 
 audit_message_for_deploy_finish() {
@@ -570,7 +968,7 @@ audit_emit_query_output() {
   audit_write_content "$output_path" "$rendered"
 }
 
-audit_insert_event() {
+audit_insert_event_sql() {
   local app="$1"
   local category="$2"
   local action="$3"
@@ -592,7 +990,8 @@ audit_insert_event() {
     meta_json='{}'
   fi
 
-  audit_db_exec "INSERT INTO events (
+  cat <<SQL
+INSERT INTO events (
     ts,
     app,
     category,
@@ -626,7 +1025,17 @@ audit_insert_event() {
     $(audit_sql_nullable "$message"),
     $(audit_sql_quote "$meta_json"),
     $(audit_sql_quote "$created_at")
-  );"
+  );
+SQL
+}
+
+audit_insert_event() {
+  audit_db_exec "$(audit_insert_event_sql "$@")"
+}
+
+audit_insert_event_with_id() {
+  audit_db_query_single "$(audit_insert_event_sql "$@")
+SELECT last_insert_rowid();"
 }
 
 audit_insert_maintenance_event() {
@@ -636,6 +1045,166 @@ audit_insert_maintenance_event() {
   local meta_json="$4"
 
   audit_insert_event "" "maintenance" "$action" "success" "$classification" "manual" "" "" "" "system" "" "" "$message" "$meta_json"
+}
+
+audit_delete_stale_pending_command_contexts() {
+  local ts="${1:-$(audit_now_utc)}"
+
+  audit_db_exec "DELETE FROM pending_command_contexts WHERE created_at < strftime('%Y-%m-%dT%H:%M:%SZ', $(audit_sql_quote "$ts"), '-$(audit_pending_stale_threshold_seconds) seconds');"
+}
+
+audit_delete_stale_pending_runtime_events() {
+  local ts="${1:-$(audit_now_utc)}"
+
+  audit_db_exec "DELETE FROM pending_runtime_events WHERE created_at < strftime('%Y-%m-%dT%H:%M:%SZ', $(audit_sql_quote "$ts"), '-$(audit_pending_stale_threshold_seconds) seconds');"
+}
+
+audit_store_pending_command_context() {
+  local app="$1"
+  local subcommand="$2"
+  local command_text="$3"
+  local args_json="$4"
+  local actor_type="$5"
+  local actor_name="$6"
+  local actor_source="$7"
+  local hostname="$8"
+  local ts="${9:-$(audit_now_utc)}"
+
+  if [[ -z "$args_json" ]]; then
+    args_json='[]'
+  fi
+
+  audit_delete_stale_pending_command_contexts "$ts"
+  audit_db_exec "INSERT INTO pending_command_contexts(
+    app,
+    subcommand,
+    command_text,
+    args_json,
+    actor_type,
+    actor_name,
+    actor_source,
+    hostname,
+    created_at
+  ) VALUES (
+    $(audit_sql_nullable "$app"),
+    $(audit_sql_quote "$subcommand"),
+    $(audit_sql_quote "$command_text"),
+    $(audit_sql_quote "$args_json"),
+    $(audit_sql_quote "$actor_type"),
+    $(audit_sql_nullable "$actor_name"),
+    $(audit_sql_nullable "$actor_source"),
+    $(audit_sql_nullable "$hostname"),
+    $(audit_sql_quote "$ts")
+  );"
+}
+
+audit_claim_pending_command_context() {
+  local app="$1"
+  local subcommand="$2"
+  local args_json="$3"
+  local ts="${4:-$(audit_now_utc)}"
+
+  if [[ -z "$args_json" ]]; then
+    args_json='[]'
+  fi
+
+  sqlite3 -tabs "$(audit_db_path)" <<SQL
+.timeout $(audit_busy_timeout_ms)
+PRAGMA foreign_keys = ON;
+BEGIN IMMEDIATE;
+DELETE FROM pending_command_contexts
+WHERE created_at < strftime('%Y-%m-%dT%H:%M:%SZ', $(audit_sql_quote "$ts"), '-$(audit_pending_stale_threshold_seconds) seconds');
+SELECT id, actor_type, COALESCE(actor_name, ''), COALESCE(actor_source, ''), command_text, COALESCE(hostname, ''), created_at
+FROM pending_command_contexts
+WHERE subcommand = $(audit_sql_quote "$subcommand")
+  AND COALESCE(app, '') = $(audit_sql_quote "$app")
+  AND args_json = $(audit_sql_quote "$args_json")
+  AND created_at >= strftime('%Y-%m-%dT%H:%M:%SZ', $(audit_sql_quote "$ts"), '-$(audit_command_match_window_seconds) seconds')
+ORDER BY created_at DESC, id DESC
+LIMIT 1;
+DELETE FROM pending_command_contexts
+WHERE id = (
+  SELECT id
+  FROM pending_command_contexts
+  WHERE subcommand = $(audit_sql_quote "$subcommand")
+    AND COALESCE(app, '') = $(audit_sql_quote "$app")
+    AND args_json = $(audit_sql_quote "$args_json")
+    AND created_at >= strftime('%Y-%m-%dT%H:%M:%SZ', $(audit_sql_quote "$ts"), '-$(audit_command_match_window_seconds) seconds')
+  ORDER BY created_at DESC, id DESC
+  LIMIT 1
+);
+COMMIT;
+SQL
+}
+
+audit_store_pending_runtime_event() {
+  local event_id="$1"
+  local app="$2"
+  local subcommand="$3"
+  local args_json="$4"
+  local ts="${5:-$(audit_now_utc)}"
+
+  if [[ -z "$args_json" ]]; then
+    args_json='[]'
+  fi
+
+  audit_delete_stale_pending_runtime_events "$ts"
+  audit_db_exec "INSERT INTO pending_runtime_events(
+    event_id,
+    app,
+    subcommand,
+    args_json,
+    created_at,
+    updated_at
+  ) VALUES (
+    $(audit_sql_quote "$event_id"),
+    $(audit_sql_quote "$app"),
+    $(audit_sql_quote "$subcommand"),
+    $(audit_sql_quote "$args_json"),
+    $(audit_sql_quote "$ts"),
+    $(audit_sql_quote "$ts")
+  ) ON CONFLICT(event_id) DO UPDATE SET
+    updated_at = excluded.updated_at,
+    args_json = excluded.args_json;"
+}
+
+audit_attach_container_id_to_pending_run_event() {
+  local app="$1"
+  local container_id="$2"
+  local ts="${3:-$(audit_now_utc)}"
+  local patch_json
+
+  patch_json="{\"container_id\":$(audit_json_string "$container_id"),\"success_hint\":\"container_created\"}"
+
+  sqlite3 "$(audit_db_path)" <<SQL
+.timeout $(audit_busy_timeout_ms)
+PRAGMA foreign_keys = ON;
+BEGIN IMMEDIATE;
+DELETE FROM pending_runtime_events
+WHERE created_at < strftime('%Y-%m-%dT%H:%M:%SZ', $(audit_sql_quote "$ts"), '-$(audit_pending_stale_threshold_seconds) seconds');
+UPDATE events
+SET meta_json = json_patch(COALESCE(meta_json, '{}'), json($(audit_sql_quote "$patch_json")))
+WHERE id = (
+  SELECT event_id
+  FROM pending_runtime_events
+  WHERE subcommand = 'run'
+    AND app = $(audit_sql_quote "$app")
+    AND created_at >= strftime('%Y-%m-%dT%H:%M:%SZ', $(audit_sql_quote "$ts"), '-$(audit_command_match_window_seconds) seconds')
+  ORDER BY created_at DESC, id DESC
+  LIMIT 1
+);
+DELETE FROM pending_runtime_events
+WHERE id = (
+  SELECT id
+  FROM pending_runtime_events
+  WHERE subcommand = 'run'
+    AND app = $(audit_sql_quote "$app")
+    AND created_at >= strftime('%Y-%m-%dT%H:%M:%SZ', $(audit_sql_quote "$ts"), '-$(audit_command_match_window_seconds) seconds')
+  ORDER BY created_at DESC, id DESC
+  LIMIT 1
+);
+COMMIT;
+SQL
 }
 
 audit_with_lock() {

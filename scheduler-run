@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+set -eo pipefail
+[[ $DOKKU_TRACE ]] && set -x
+
+AUDIT_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# shellcheck source=/dev/null
+source "$AUDIT_SCRIPT_DIR/bootstrap"
+
+audit_handle_scheduler_run() {
+  local scheduler="${1:-}"
+  local app="${2:-}"
+  local ts
+  local args_json
+  local claim
+  local actor_type="system"
+  local actor_name=""
+  local actor_source=""
+  local command_text=""
+  local hostname=""
+  local event_id
+  local meta_json
+
+  : "$scheduler"
+  [[ -n "$app" ]] || audit_die "missing app name"
+  shift 2 || true
+
+  ts="$(audit_now_utc)"
+  args_json="$(audit_json_array_from_args "$@")"
+  claim="$(audit_claim_pending_command_context "$app" "run" "$args_json" "$ts")"
+  if [[ -n "$claim" ]]; then
+    IFS=$'\t' read -r _ actor_type actor_name actor_source command_text hostname _ <<< "$claim"
+  fi
+
+  if [[ -z "$command_text" ]]; then
+    command_text="$(audit_prefixed_dokku_command_text run "$app" "$@")"
+  fi
+  if [[ -z "$hostname" ]]; then
+    hostname="$(audit_hostname)"
+  fi
+
+  meta_json="$(audit_command_event_meta_json "$actor_source" "$command_text" "run" "$args_json" "" "" "$hostname" "scheduled")"
+  event_id="$(audit_insert_event_with_id "$app" "command" "run" "success" "dokku_run" "scheduler-run" "" "" "" "$actor_type" "$actor_name" "" "$(audit_message_for_run)" "$meta_json" "$ts" "$ts")"
+  audit_store_pending_runtime_event "$event_id" "$app" "run" "$args_json" "$ts"
+}
+
+audit_trigger_guard "scheduler-run" "${2:-}" audit_handle_scheduler_run "$@"

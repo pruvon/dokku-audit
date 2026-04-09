@@ -39,7 +39,7 @@ if [[ -f "$db_path" && -r "$db_path" ]]; then
     issues+=("unexpected schema version: ${user_version:-unreadable}")
   fi
 
-  for table_name in events pending_deploys meta; do
+  for table_name in events pending_deploys pending_command_contexts pending_runtime_events meta; do
     if audit_table_exists "$table_name"; then
       oks+=("table present: $table_name")
     else
@@ -47,7 +47,7 @@ if [[ -f "$db_path" && -r "$db_path" ]]; then
     fi
   done
 
-  for index_name in idx_events_ts idx_events_app_ts idx_events_category_ts idx_events_classification_ts idx_events_rev idx_events_correlation_id; do
+  for index_name in idx_events_ts idx_events_app_ts idx_events_category_ts idx_events_classification_ts idx_events_rev idx_events_correlation_id idx_pending_command_contexts_lookup idx_pending_runtime_events_event_id idx_pending_runtime_events_lookup; do
     if audit_index_exists "$index_name"; then
       oks+=("index present: $index_name")
     else
@@ -74,6 +74,20 @@ if [[ -f "$db_path" && -r "$db_path" ]]; then
     oks+=("no stale pending deploy rows")
   else
     issues+=("stale pending deploy rows detected: ${stale_pending_count:-unreadable}")
+  fi
+
+  stale_command_context_count="$(audit_db_query_single "SELECT COUNT(1) FROM pending_command_contexts WHERE created_at < strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-$(audit_pending_stale_threshold_seconds) seconds');" 2>/dev/null || true)"
+  if [[ "$stale_command_context_count" =~ ^[0-9]+$ ]] && (( stale_command_context_count == 0 )); then
+    oks+=("no stale pending command context rows")
+  else
+    issues+=("stale pending command context rows detected: ${stale_command_context_count:-unreadable}")
+  fi
+
+  stale_runtime_event_count="$(audit_db_query_single "SELECT COUNT(1) FROM pending_runtime_events WHERE created_at < strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-$(audit_pending_stale_threshold_seconds) seconds');" 2>/dev/null || true)"
+  if [[ "$stale_runtime_event_count" =~ ^[0-9]+$ ]] && (( stale_runtime_event_count == 0 )); then
+    oks+=("no stale pending runtime event rows")
+  else
+    issues+=("stale pending runtime event rows detected: ${stale_runtime_event_count:-unreadable}")
   fi
 fi
 

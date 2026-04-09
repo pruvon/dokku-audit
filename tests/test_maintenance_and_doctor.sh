@@ -19,7 +19,7 @@ assert_contains "$RUN_OUTPUT" 'ok: integrity_check returned ok'
 run_cmd "$REPO_ROOT/report"
 assert_status 0
 assert_contains "$RUN_OUTPUT" 'audit plugin enabled: true'
-assert_contains "$RUN_OUTPUT" 'audit schema version: 2'
+assert_contains "$RUN_OUTPUT" 'audit schema version: 3'
 assert_contains "$RUN_OUTPUT" 'audit pending deploys: 0'
 
 setup_test_env prune_command

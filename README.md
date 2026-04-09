@@ -7,6 +7,7 @@ Use it when you want to answer questions like:
 - Which app was deployed most recently?
 - Was this a real source deploy or only a release/rebuild-style deploy?
 - When did an app's config, domains, or ports change?
+- Who invoked `dokku run` or `dokku enter` for an app?
 - What happened on a single app over time?
 
 ## Requirements
@@ -104,7 +105,9 @@ Default paths:
 ## What The Plugin Records
 
 - App create and destroy events
+- Dokku command invocations recorded through `user-auth`
 - Deploy flow events such as `receive-app`, `deploy-source-set`, `post-extract`, and `post-deploy`
+- Structured `dokku run` and `dokku enter` events, including actor and target container/process context when Dokku exposes it
 - Config changes with value redaction
 - Domain changes
 - Port changes
@@ -112,13 +115,16 @@ Default paths:
 
 Deploy completion is classified as either `source_deploy` or `release_only`.
 
+- `source_deploy`: `post-deploy` happened with preceding source intake/build context. In practice this usually covers real source-backed deploy flows such as `git push`, `git:sync`, archive/image source imports, and `dokku ps:rebuild`.
+- `release_only`: `post-deploy` happened without preceding source intake/build context. In practice this usually covers restart or release-style flows that reuse the existing built image, such as `dokku ps:restart`, plus config-driven restart/redeploy flows.
+
 ## Command Guide
 
 - `dokku audit`: Shortcut for `dokku audit:status`.
 - `dokku audit:status`: Shows whether the plugin is installed correctly and whether the database is reachable. Good first command after install.
 - `dokku audit:doctor`: Runs deeper checks. Use this when `status` looks wrong or when you suspect DB/config problems.
 - `dokku audit:migrate`: Applies unapplied schema migrations. Useful after updates or during troubleshooting.
-- `dokku audit:last-deploys`: Shows the most recent completed deploy events. Good for answering “what deployed last?”.
+- `dokku audit:last-deploys`: Shows the most recent completed deploy events. Good for answering “what deployed last?”. Use `--classification source_deploy` or `--classification release_only` to focus on one deploy class.
 - `dokku audit:timeline <app>`: Shows the event history for one app. Best command when debugging one app over time.
 - `dokku audit:recent`: Shows recent events across all apps. Useful for host-wide change visibility.
 - `dokku audit:show <event-id>`: Shows full details for one event. Use it after `last-deploys`, `timeline`, or `recent` when you need more context.
@@ -139,6 +145,18 @@ Show recent deploys for one app:
 
 ```bash
 dokku audit:last-deploys --app myapp
+```
+
+Show only source-backed deploys such as `git push` or `dokku ps:rebuild`:
+
+```bash
+dokku audit:last-deploys --classification source_deploy
+```
+
+Show only restart or release-style deploys such as `dokku ps:restart`:
+
+```bash
+dokku audit:last-deploys --classification release_only
 ```
 
 Show one app timeline:
@@ -197,8 +215,10 @@ dokku audit:timeline myapp --format json
 
 - Config values are never stored from `post-config-update`.
 - Only config key names are recorded.
+- General command audit redacts `config:set` values and `dokku run --env` values before storing command metadata.
 - Audit failures are best-effort by default and should not break successful Dokku app operations.
 - The database is intended to remain host-local.
+- Direct `docker exec` access bypasses Dokku triggers, so it is not visible to this plugin.
 
 ## Backup and Restore
 

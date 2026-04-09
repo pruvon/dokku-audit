@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+set -eo pipefail
+[[ $DOKKU_TRACE ]] && set -x
+
+AUDIT_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# shellcheck source=/dev/null
+source "$AUDIT_SCRIPT_DIR/bootstrap"
+
+audit_handle_user_auth() {
+  local ssh_user="${1:-}"
+  local ssh_name="${2:-}"
+  local ts
+  local actor_name
+  local actor_source
+  local actor_type
+  local hostname
+  local subcommand
+  local app
+  local container_type
+  local container_id
+  local general_args_json
+  local match_args_json
+  local command_text
+  local meta_json
+  local message
+  local -a command_tokens=()
+  local -a sanitized_tokens=()
+  local token
+  local -a parsed_match_args=()
+  local parsed_app=""
+  local parsed_subcommand=""
+  local parsed_container_type=""
+  local parsed_container_id=""
+
+  shift 2 || true
+  while IFS= read -r token; do
+    [[ -n "$token" ]] || continue
+    command_tokens+=("$token")
+  done < <(audit_command_tokens_lines "$@")
+
+  [[ "${#command_tokens[@]}" -gt 0 ]] || return 0
+
+  ts="$(audit_now_utc)"
+  actor_name="$(audit_actor_name_from_ssh_context "$ssh_name" "$ssh_user")"
+  actor_source="$(audit_actor_source_from_ssh_context "$ssh_name" "$ssh_user")"
+  actor_type="$(audit_actor_type_from_name "$actor_name")"
+  hostname="$(audit_hostname)"
+
+  audit_parse_dokku_invocation "${command_tokens[@]}"
+  parsed_subcommand="$AUDIT_PARSED_SUBCOMMAND"
+  parsed_app="$AUDIT_PARSED_APP"
+  parsed_container_type="$AUDIT_PARSED_CONTAINER_TYPE"
+  parsed_container_id="$AUDIT_PARSED_CONTAINER_ID"
+  parsed_match_args=("${AUDIT_PARSED_MATCH_ARGS[@]}")
+
+  while IFS= read -r token; do
+    [[ -n "$token" ]] || continue
+    sanitized_tokens+=("$token")
+  done < <(audit_sanitized_dokku_command_tokens_lines "${command_tokens[@]}")
+
+  audit_parse_dokku_invocation "${sanitized_tokens[@]}"
+  subcommand="$AUDIT_PARSED_SUBCOMMAND"
+  app="$parsed_app"
+  container_type="$parsed_container_type"
+  container_id="$parsed_container_id"
+  general_args_json="$(audit_json_array_from_args "${AUDIT_PARSED_TRAILING_TOKENS[@]}")"
+  match_args_json="$(audit_json_array_from_args "${parsed_match_args[@]}")"
+  command_text="$(audit_prefixed_dokku_command_text "${sanitized_tokens[@]}")"
+  message="$(audit_message_for_command_invoke "$subcommand")"
+  meta_json="$(audit_command_event_meta_json "$actor_source" "$command_text" "$subcommand" "$general_args_json" "$container_type" "$container_id" "$hostname" "authorized")"
+
+  audit_insert_event "$app" "command" "invoke" "success" "dokku_command" "user-auth" "" "" "" "$actor_type" "$actor_name" "" "$message" "$meta_json" "$ts" "$ts"
+
+  case "$subcommand" in
+    run|enter)
+      [[ -n "$app" ]] || return 0
+      audit_store_pending_command_context "$app" "$subcommand" "$command_text" "$match_args_json" "$actor_type" "$actor_name" "$actor_source" "$hostname" "$ts"
+      ;;
+  esac
+}
+
+audit_trigger_guard "user-auth" "" audit_handle_user_auth "$@"

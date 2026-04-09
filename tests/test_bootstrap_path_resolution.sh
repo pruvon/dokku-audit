@@ -13,7 +13,7 @@ set -e
 assert_status 0
 assert_contains "$RUN_OUTPUT" 'dokku-audit: initialized '
 assert_eq '1145132356' "$(db_query_single 'PRAGMA application_id;')"
-assert_eq '2' "$(db_query_single 'PRAGMA user_version;')"
+assert_eq '3' "$(db_query_single 'PRAGMA user_version;')"
 
 set +e
 RUN_OUTPUT="$(PLUGIN_AVAILABLE_PATH="$TEST_ROOT/plugins/available" "$REPO_ROOT/subcommands/status" 2>&1)"
@@ -21,4 +21,4 @@ RUN_STATUS=$?
 set -e
 
 assert_status 0
-assert_contains "$RUN_OUTPUT" 'schema version: 2'
+assert_contains "$RUN_OUTPUT" 'schema version: 3'
