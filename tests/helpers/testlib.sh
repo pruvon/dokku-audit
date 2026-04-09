@@ -23,6 +23,7 @@ setup_test_env() {
   export DOKKU_AUDIT_SUDO_USER=""
   export DOKKU_AUDIT_LOCAL_USER=""
   export DOKKU_AUDIT_EFFECTIVE_USER=""
+  export DOKKU_AUDIT_PROCESS_TREE_USER=""
 }
 
 setup_test_env_with_runtime_user() {

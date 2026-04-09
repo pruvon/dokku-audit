@@ -70,6 +70,7 @@ mapping = [
     ("sudo user", meta_payload.get("sudo_user") or "-"),
     ("local user", meta_payload.get("local_user") or "-"),
     ("effective user", meta_payload.get("effective_user") or "-"),
+    ("process tree user", meta_payload.get("process_tree_user") or "-"),
     ("ssh user", meta_payload.get("ssh_user") or "-"),
     ("ssh name", meta_payload.get("ssh_name") or "-"),
     ("ssh key fingerprint", meta_payload.get("ssh_key_fingerprint") or "-"),

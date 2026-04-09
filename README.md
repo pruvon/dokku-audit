@@ -220,8 +220,8 @@ dokku audit:timeline myapp --format json
 - Internal follow-on events store the sanitized triggering Dokku command when actor propagation is possible.
 - If you see `ssh-key:default`, `default` is the Dokku `SSH_NAME` label attached to the matching key, not a Unix username.
 - If a Dokku command is run locally via `sudo`, follow-on events and maintenance events can attribute it as `sudo-user:<user>` from `SUDO_USER`.
-- If a command runs locally without SSH and without `sudo`, top-level maintenance commands can fall back to `unix-user:<user>` from the local process environment.
-- When Dokku exposes only the low-signal fallback label `SSH_NAME=default`, a meaningful local Unix user can be preferred for display and actor attribution while the original SSH metadata is still kept in JSON.
+- If a command runs locally without SSH and without `sudo`, top-level maintenance commands can fall back to `unix-user:<user>` from the local process environment or process tree.
+- When Dokku exposes only the low-signal fallback label `SSH_NAME=default`, a meaningful local Unix user discovered from the process environment or process tree can be preferred for display and actor attribution while the original SSH metadata is still kept in JSON.
 - `dokku-system` means Dokku triggered the event internally and no user/key identity was available at that trigger point.
 - `user-auth` command audit keeps actor attribution for meaningful commands but skips noisy read-only commands such as `audit:*`, `logs`, `config`, `*:list`, `*:links`, `*:app-links`, `*:report`, `*:info`, `*:show`, `*:exists`, `--version`, and `ps:retire`.
 - Audit failures are best-effort by default and should not break successful Dokku app operations.

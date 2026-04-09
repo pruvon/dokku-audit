@@ -111,14 +111,14 @@ install_fake_sshcommand
 run_at '2026-04-08T21:35:00Z' "$REPO_ROOT/subcommands/migrate"
 assert_status 0
 
-run_cmd env DOKKU_AUDIT_NOW='2026-04-08T21:35:01Z' DOKKU_AUDIT_LOCAL_USER=pruvon DOKKU_AUDIT_EFFECTIVE_USER=pruvon SSH_USER=dokku SSH_NAME=default PATH="$PATH" "$REPO_ROOT/user-auth" dokku default config:set myapp FOO=bar
+run_cmd env DOKKU_AUDIT_NOW='2026-04-08T21:35:01Z' DOKKU_AUDIT_PROCESS_TREE_USER=pruvon DOKKU_AUDIT_EFFECTIVE_USER=root SSH_USER=dokku SSH_NAME=default PATH="$PATH" "$REPO_ROOT/user-auth" dokku default config:set myapp FOO=bar
 assert_status 0
 run_at '2026-04-08T21:35:02Z' "$REPO_ROOT/post-config-update" myapp set FOO=bar
 assert_status 0
 
 assert_eq 'pruvon' "$(db_query_single "SELECT actor_name FROM events WHERE classification = 'config_change' LIMIT 1;")"
-assert_eq 'LOCAL_USER' "$(db_query_single "SELECT json_extract(meta_json, '$.actor_source') FROM events WHERE classification = 'config_change' LIMIT 1;")"
-assert_eq 'pruvon' "$(db_query_single "SELECT json_extract(meta_json, '$.local_user') FROM events WHERE classification = 'config_change' LIMIT 1;")"
+assert_eq 'PROCESS_TREE_USER' "$(db_query_single "SELECT json_extract(meta_json, '$.actor_source') FROM events WHERE classification = 'config_change' LIMIT 1;")"
+assert_eq 'pruvon' "$(db_query_single "SELECT json_extract(meta_json, '$.process_tree_user') FROM events WHERE classification = 'config_change' LIMIT 1;")"
 assert_eq 'default' "$(db_query_single "SELECT json_extract(meta_json, '$.ssh_name') FROM events WHERE classification = 'config_change' LIMIT 1;")"
 
 run_cmd "$REPO_ROOT/subcommands/recent" --limit 1

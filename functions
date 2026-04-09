@@ -440,17 +440,118 @@ audit_effective_user() {
   printf '\n'
 }
 
+audit_process_parent_pid() {
+  local pid="$1"
+  local ppid
+
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 0
+  ppid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d '[:space:]')"
+  printf '%s\n' "$ppid"
+}
+
+audit_process_user() {
+  local pid="$1"
+  local user_name
+
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 0
+  user_name="$(ps -o user= -p "$pid" 2>/dev/null | awk 'NR == 1 { print $1; exit }')"
+  printf '%s\n' "$user_name"
+}
+
+audit_process_tree_user() {
+  local pid
+  local depth=0
+  local user_name
+
+  if [[ -n "${DOKKU_AUDIT_PROCESS_TREE_USER+x}" ]]; then
+    printf '%s\n' "$DOKKU_AUDIT_PROCESS_TREE_USER"
+    return 0
+  fi
+
+  pid="$$"
+  while [[ "$pid" =~ ^[0-9]+$ ]] && [[ "$pid" != "1" ]] && [[ "$depth" -lt 16 ]]; do
+    pid="$(audit_process_parent_pid "$pid")"
+    [[ "$pid" =~ ^[0-9]+$ ]] || break
+    user_name="$(audit_process_user "$pid")"
+    if audit_is_meaningful_host_user "$user_name"; then
+      printf '%s\n' "$user_name"
+      return 0
+    fi
+    depth=$((depth + 1))
+  done
+
+  printf '\n'
+}
+
 audit_local_user() {
   local value
 
-  value="$(audit_override_or_env DOKKU_AUDIT_LOCAL_USER LOGNAME)"
+  if [[ -n "${DOKKU_AUDIT_LOCAL_USER+x}" ]]; then
+    if [[ -n "$DOKKU_AUDIT_LOCAL_USER" ]]; then
+      printf '%s\n' "$DOKKU_AUDIT_LOCAL_USER"
+      return 0
+    fi
+    value="$(audit_process_tree_user)"
+    printf '%s\n' "$value"
+    return 0
+  fi
+
+  value="$(audit_override_or_env "" LOGNAME)"
   if [[ -n "$value" ]]; then
     printf '%s\n' "$value"
     return 0
   fi
 
-  value="$(audit_override_or_env DOKKU_AUDIT_LOCAL_USER USER)"
-  printf '%s\n' "$value"
+  value="$(audit_override_or_env "" USER)"
+  if [[ -n "$value" ]]; then
+    printf '%s\n' "$value"
+    return 0
+  fi
+
+  audit_process_tree_user
+}
+
+audit_local_user_source() {
+  local value
+
+  if [[ -n "${DOKKU_AUDIT_LOCAL_USER+x}" ]]; then
+    if [[ -n "$DOKKU_AUDIT_LOCAL_USER" ]]; then
+      printf 'LOCAL_USER\n'
+      return 0
+    fi
+    value="$(audit_process_tree_user)"
+    if [[ -n "$value" ]]; then
+      printf 'PROCESS_TREE_USER\n'
+    fi
+    return 0
+  fi
+
+  if [[ -n "${DOKKU_AUDIT_PROCESS_TREE_USER+x}" ]]; then
+    if [[ -n "$DOKKU_AUDIT_PROCESS_TREE_USER" ]]; then
+      printf 'PROCESS_TREE_USER\n'
+    fi
+    return 0
+  fi
+
+  value="$(audit_override_or_env "" LOGNAME)"
+  if [[ -n "$value" ]]; then
+    printf 'LOCAL_USER\n'
+    return 0
+  fi
+
+  value="$(audit_override_or_env "" USER)"
+  if [[ -n "$value" ]]; then
+    printf 'LOCAL_USER\n'
+    return 0
+  fi
+
+  value="$(audit_process_tree_user)"
+  if [[ -n "$value" ]]; then
+    printf 'PROCESS_TREE_USER\n'
+    return 0
+  fi
+
+  printf '\n'
 }
 
 audit_sudo_user() {
@@ -480,7 +581,7 @@ audit_safe_local_actor_name() {
 
 audit_safe_local_actor_source() {
   local sudo_user
-  local local_user
+  local local_user_source
   local effective_user
 
   sudo_user="$(audit_sudo_user)"
@@ -489,9 +590,9 @@ audit_safe_local_actor_source() {
     return 0
   fi
 
-  local_user="$(audit_local_user)"
-  if [[ -n "$local_user" ]]; then
-    printf 'LOCAL_USER\n'
+  local_user_source="$(audit_local_user_source)"
+  if [[ -n "$local_user_source" ]]; then
+    printf '%s\n' "$local_user_source"
     return 0
   fi
 
@@ -513,16 +614,19 @@ audit_local_actor_meta_json() {
   local sudo_user
   local local_user
   local effective_user
+  local process_tree_user
 
   sudo_user="$(audit_sudo_user)"
   local_user="$(audit_local_user)"
   effective_user="$(audit_effective_user)"
+  process_tree_user="$(audit_process_tree_user)"
 
-  printf '{"actor_source":%s,"sudo_user":%s,"local_user":%s,"effective_user":%s}' \
+  printf '{"actor_source":%s,"sudo_user":%s,"local_user":%s,"effective_user":%s,"process_tree_user":%s}' \
     "$(audit_json_or_null "$actor_source")" \
     "$(audit_json_or_null "$sudo_user")" \
     "$(audit_json_or_null "$local_user")" \
-    "$(audit_json_or_null "$effective_user")"
+    "$(audit_json_or_null "$effective_user")" \
+    "$(audit_json_or_null "$process_tree_user")"
 }
 
 audit_should_prefer_local_actor_over_ssh() {
@@ -567,6 +671,9 @@ CASE
   WHEN COALESCE(json_extract(meta_json, '$.actor_source'), '') = 'SUDO_USER'
     AND COALESCE(json_extract(meta_json, '$.sudo_user'), '') != ''
   THEN 'sudo-user:' || json_extract(meta_json, '$.sudo_user')
+  WHEN COALESCE(json_extract(meta_json, '$.actor_source'), '') = 'PROCESS_TREE_USER'
+    AND COALESCE(json_extract(meta_json, '$.process_tree_user'), '') != ''
+  THEN 'unix-user:' || json_extract(meta_json, '$.process_tree_user')
   WHEN COALESCE(json_extract(meta_json, '$.actor_source'), '') IN ('LOCAL_USER', 'EFFECTIVE_USER')
     AND COALESCE(json_extract(meta_json, '$.local_user'), '') != ''
   THEN 'unix-user:' || json_extract(meta_json, '$.local_user')
