@@ -1,86 +1,203 @@
 # dokku-audit
 
-Durable operational audit history for Dokku.
+`dokku-audit` is a Dokku community plugin that keeps a queryable history of deploys and operational changes on a Dokku host.
 
-`dokku-audit` is a Dokku community plugin that records selected high-value operational events into a local SQLite database and exposes that history through first-class CLI commands.
+Use it when you want to answer questions like:
 
-## What It Captures
+- Which app was deployed most recently?
+- Was this a real source deploy or only a release/rebuild-style deploy?
+- When did an app's config, domains, or ports change?
+- What happened on a single app over time?
 
-- App lifecycle events: `app-create`, `app-destroy`
-- Deploy flow stages: `receive-app`, `deploy-source-set`, `post-extract`, `post-deploy`
-- Configuration changes with mandatory secret redaction
-- Domain changes
-- Port changes
-- Plugin maintenance operations such as migration, backup, vacuum, and prune
+## Requirements
 
-Deploy completion is classified as either `source_deploy` or `release_only`.
+`dokku-audit` runs on the Dokku host itself.
 
-## Storage
+- Dokku must already be installed.
+- `sqlite3` is required.
+- `flock` is recommended for migration locking. If it is missing, the plugin falls back to a directory-based lock.
+
+## Install Dependencies
+
+On Ubuntu/Debian-based Dokku hosts:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y sqlite3 util-linux
+```
+
+Notes:
+
+- `sqlite3` is the hard dependency.
+- `flock` is typically provided by `util-linux`.
+- On many Dokku hosts `util-linux` is already installed, but installing it explicitly is harmless.
+
+Quick verification:
+
+```bash
+command -v sqlite3
+command -v flock
+```
+
+## Install Plugin
+
+Install the plugin on the Dokku host:
+
+```bash
+dokku plugin:install https://github.com/pruvon/dokku-audit.git
+```
+
+After install, verify that everything is healthy:
+
+```bash
+dokku audit:status
+dokku audit:doctor
+```
+
+The install process creates the plugin data directory and initializes the SQLite database automatically.
+
+## Update Plugin
+
+When you update the plugin, run:
+
+```bash
+dokku plugin:update dokku-audit
+dokku audit:status
+```
+
+If you want to run migrations manually:
+
+```bash
+dokku audit:migrate
+```
+
+## Uninstall Plugin
+
+Remove the plugin from Dokku:
+
+```bash
+dokku plugin:uninstall dokku-audit
+```
+
+Important:
+
+- Uninstall does not delete the audit database automatically.
+- Audit data is intentionally preserved.
+
+If you also want to delete stored audit data, remove it manually:
+
+```bash
+sudo rm -rf /var/lib/dokku/data/dokku-audit
+```
+
+Only do that if you are sure you no longer need the audit history.
+
+## Where Data Lives
 
 Default paths:
 
 - Data directory: `/var/lib/dokku/data/dokku-audit`
 - Database: `/var/lib/dokku/data/dokku-audit/audit.db`
 - Backups: `/var/lib/dokku/data/dokku-audit/backups`
-- Migration lock: `/var/lib/dokku/data/dokku-audit/migrate.lock`
 
-The database uses:
+## What The Plugin Records
 
-- `PRAGMA application_id = 1145132356`
-- `PRAGMA user_version` for schema versioning
-- `WAL` journal mode when SQLite can enable it
-- `busy_timeout = 5000`
-- `foreign_keys = ON`
+- App create and destroy events
+- Deploy flow events such as `receive-app`, `deploy-source-set`, `post-extract`, and `post-deploy`
+- Config changes with value redaction
+- Domain changes
+- Port changes
+- Maintenance events like migration, backup, vacuum, and prune
 
-## Commands
+Deploy completion is classified as either `source_deploy` or `release_only`.
 
-```text
-dokku audit
-dokku audit:help
-dokku audit:status
-dokku audit:doctor
-dokku audit:migrate [--dry-run] [--verbose]
-dokku audit:last-deploys [--limit N] [--app APP] [--classification VALUE] [--format table|json|jsonl] [--quiet]
-dokku audit:timeline <app> [--limit N] [--since ISO8601] [--until ISO8601] [--category VALUE] [--format table|json|jsonl] [--quiet]
-dokku audit:recent [--limit N] [--category VALUE] [--classification VALUE] [--status VALUE] [--since ISO8601] [--format table|json|jsonl] [--quiet]
-dokku audit:show <event-id> [--format table|json]
-dokku audit:export [--format jsonl|json] [--app APP] [--since ISO8601] [--until ISO8601] [--output PATH]
-dokku audit:backup [--output PATH]
-dokku audit:vacuum
-dokku audit:prune --older-than DAYS [--category VALUE] [--classification VALUE] [--yes]
-```
+## Command Guide
 
-## Install
+- `dokku audit`: Shortcut for `dokku audit:status`.
+- `dokku audit:status`: Shows whether the plugin is installed correctly and whether the database is reachable. Good first command after install.
+- `dokku audit:doctor`: Runs deeper checks. Use this when `status` looks wrong or when you suspect DB/config problems.
+- `dokku audit:migrate`: Applies unapplied schema migrations. Useful after updates or during troubleshooting.
+- `dokku audit:last-deploys`: Shows the most recent completed deploy events. Good for answering “what deployed last?”.
+- `dokku audit:timeline <app>`: Shows the event history for one app. Best command when debugging one app over time.
+- `dokku audit:recent`: Shows recent events across all apps. Useful for host-wide change visibility.
+- `dokku audit:show <event-id>`: Shows full details for one event. Use it after `last-deploys`, `timeline`, or `recent` when you need more context.
+- `dokku audit:export`: Exports events as JSON or JSONL. Useful for archiving or external processing.
+- `dokku audit:backup`: Creates a safe SQLite backup of the audit database. Recommended before major upgrades or cleanup.
+- `dokku audit:vacuum`: Runs SQLite maintenance. Useful after heavy pruning or long-term use.
+- `dokku audit:prune --older-than DAYS --yes`: Deletes old events intentionally. Use carefully; this is the cleanup command.
 
-On a Dokku host:
+## Common Examples
+
+Show recent deploys:
 
 ```bash
-dokku plugin:install https://github.com/<your-org>/dokku-audit.git
+dokku audit:last-deploys
 ```
 
-The plugin verifies `sqlite3` during install. It prefers `flock` for migration locking, but falls back to a directory lock if `flock` is unavailable.
+Show recent deploys for one app:
+
+```bash
+dokku audit:last-deploys --app myapp
+```
+
+Show one app timeline:
+
+```bash
+dokku audit:timeline myapp
+```
+
+Show recent config-related changes across the host:
+
+```bash
+dokku audit:recent --category config
+```
+
+Inspect one event in detail:
+
+```bash
+dokku audit:show 42
+```
+
+Export one app's events as JSON:
+
+```bash
+dokku audit:export --app myapp --format json --output /tmp/myapp-audit.json
+```
+
+Create a backup:
+
+```bash
+dokku audit:backup
+```
+
+Prune old maintenance events:
+
+```bash
+dokku audit:prune --older-than 180 --category maintenance --yes
+```
 
 ## Output Formats
 
-Query commands support table output by default and JSON or JSONL where appropriate.
+Query commands support:
+
+- table output by default
+- `--format json`
+- `--format jsonl`
 
 Examples:
 
 ```bash
-dokku audit:last-deploys
-dokku audit:last-deploys --app myapp --format json
-dokku audit:timeline myapp --since 2026-04-08T00:00:00Z
-dokku audit:recent --category config --format jsonl
-dokku audit:show 42
-dokku audit:export --app myapp --format json --output /tmp/myapp-audit.json
+dokku audit:last-deploys --format json
+dokku audit:recent --format jsonl
+dokku audit:timeline myapp --format json
 ```
 
-## Security
+## Security Notes
 
 - Config values are never stored from `post-config-update`.
 - Only config key names are recorded.
+- Audit failures are best-effort by default and should not break successful Dokku app operations.
 - The database is intended to remain host-local.
-- Recommended file modes are `0750` for directories and `0640` for database and backup files.
 
 ## Backup and Restore
 
@@ -97,63 +214,10 @@ Restore manually:
 3. Re-apply expected permissions.
 4. Run `dokku audit:doctor`.
 
-## Environment Overrides
-
-These environment variables are supported:
-
-- `DOKKU_AUDIT_DATA_DIR`
-- `DOKKU_AUDIT_DB_PATH`
-- `DOKKU_AUDIT_BACKUP_DIR`
-- `DOKKU_AUDIT_LOCK_FILE`
-- `DOKKU_AUDIT_BUSY_TIMEOUT_MS`
-- `DOKKU_AUDIT_JOURNAL_MODE`
-- `DOKKU_AUDIT_STRICT_MODE`
-- `DOKKU_AUDIT_PENDING_STALE_THRESHOLD_SECONDS`
-
-Testing-only deterministic overrides:
-
-- `DOKKU_AUDIT_NOW`
-- `DOKKU_AUDIT_CORRELATION_ID`
-- `DOKKU_AUDIT_EPOCH_MS`
-- `DOKKU_AUDIT_RANDOM_HEX`
-
 ## Development
 
 Run the shell test suite:
 
 ```bash
 ./tests/run.sh
-```
-
-The suite covers:
-
-- migration and status output
-- deploy classification (`source_deploy`, `release_only`)
-- config redaction
-- CLI golden outputs for status, last-deploys, and timeline
-- backup and doctor behaviors
-
-## Repository Layout
-
-```text
-.
-├── app-create
-├── app-destroy
-├── commands
-├── dependencies
-├── deploy-source-set
-├── functions
-├── install
-├── migrations/
-├── post-config-update
-├── post-deploy
-├── post-domains-update
-├── post-extract
-├── post-proxy-ports-update
-├── receive-app
-├── report
-├── subcommands/
-├── tests/
-├── uninstall
-└── update
 ```
