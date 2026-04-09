@@ -7,4 +7,11 @@ AUDIT_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 source "$AUDIT_SCRIPT_DIR/bootstrap"
 
-audit_print_help
+case "${1:-}" in
+  help|audit:help)
+    audit_print_help
+    ;;
+  *)
+    exit "${DOKKU_NOT_IMPLEMENTED_EXIT:-10}"
+    ;;
+esac
