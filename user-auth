@@ -54,6 +54,10 @@ audit_handle_user_auth() {
   parsed_container_id="$AUDIT_PARSED_CONTAINER_ID"
   parsed_match_args=("${AUDIT_PARSED_MATCH_ARGS[@]}")
 
+  if ! audit_should_record_user_auth_command "$parsed_subcommand"; then
+    return 0
+  fi
+
   while IFS= read -r token; do
     [[ -n "$token" ]] || continue
     sanitized_tokens+=("$token")

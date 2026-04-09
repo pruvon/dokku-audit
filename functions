@@ -593,6 +593,24 @@ audit_sanitized_dokku_command_text() {
   audit_join_args "${sanitized_tokens[@]}"
 }
 
+audit_should_record_user_auth_command() {
+  local subcommand="${1:-}"
+
+  case "$subcommand" in
+    run|run:detached|enter)
+      return 0
+      ;;
+    "")
+      return 1
+      ;;
+    audit|audit:*|help|version|report|apps:list|apps:exists|ps:retire|*:list|*:report|*:info|*:show|*:exists)
+      return 1
+      ;;
+  esac
+
+  return 0
+}
+
 audit_command_event_meta_json() {
   local actor_source="$1"
   local command_text="$2"

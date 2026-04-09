@@ -105,7 +105,7 @@ Default paths:
 ## What The Plugin Records
 
 - App create and destroy events
-- Dokku command invocations recorded through `user-auth`
+- Selected Dokku command invocations recorded through `user-auth`, with noisy read-only polling/report commands skipped
 - Deploy flow events such as `receive-app`, `deploy-source-set`, `post-extract`, and `post-deploy`
 - Structured `dokku run` and `dokku enter` events, including actor and target container/process context when Dokku exposes it
 - Config changes with value redaction
@@ -216,6 +216,7 @@ dokku audit:timeline myapp --format json
 - Config values are never stored from `post-config-update`.
 - Only config key names are recorded.
 - General command audit redacts `config:set` values and `dokku run --env` values before storing command metadata.
+- `user-auth` command audit keeps actor attribution for meaningful commands but skips noisy read-only commands such as `audit:*`, `*:list`, `*:report`, `*:info`, `*:show`, `*:exists`, and `ps:retire`.
 - Audit failures are best-effort by default and should not break successful Dokku app operations.
 - The database is intended to remain host-local.
 - Direct `docker exec` access bypasses Dokku triggers, so it is not visible to this plugin.

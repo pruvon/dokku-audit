@@ -28,6 +28,26 @@ assert_eq 'yes' "$(db_query_single "SELECT CASE WHEN COALESCE(json_extract(meta_
 assert_eq '0' "$(db_query_single 'SELECT COUNT(1) FROM pending_command_contexts;')"
 assert_eq '0' "$(db_query_single 'SELECT COUNT(1) FROM pending_runtime_events;')"
 
+setup_test_env command_audit_skip_noisy
+run_at '2026-04-08T20:00:00Z' "$REPO_ROOT/subcommands/migrate"
+assert_status 0
+
+run_cmd env DOKKU_AUDIT_NOW='2026-04-08T20:01:00Z' "$REPO_ROOT/user-auth" dokku alice apps:list
+assert_status 0
+run_cmd env DOKKU_AUDIT_NOW='2026-04-08T20:01:01Z' "$REPO_ROOT/user-auth" dokku alice postgres:list
+assert_status 0
+run_cmd env DOKKU_AUDIT_NOW='2026-04-08T20:01:02Z' "$REPO_ROOT/user-auth" dokku alice config:show myapp
+assert_status 0
+run_cmd env DOKKU_AUDIT_NOW='2026-04-08T20:01:03Z' "$REPO_ROOT/user-auth" dokku alice report myapp
+assert_status 0
+run_cmd env DOKKU_AUDIT_NOW='2026-04-08T20:01:04Z' "$REPO_ROOT/user-auth" dokku alice ps:retire myapp web.1
+assert_status 0
+run_cmd env DOKKU_AUDIT_NOW='2026-04-08T20:01:05Z' "$REPO_ROOT/user-auth" dokku alice audit:recent
+assert_status 0
+
+assert_eq '0' "$(db_query_single "SELECT COUNT(1) FROM events WHERE category = 'command';")"
+assert_eq '0' "$(db_query_single 'SELECT COUNT(1) FROM pending_command_contexts;')"
+
 setup_test_env command_audit_enter
 run_at '2026-04-08T20:00:00Z' "$REPO_ROOT/subcommands/migrate"
 assert_status 0
@@ -53,6 +73,9 @@ assert_status 0
 run_cmd env DOKKU_AUDIT_NOW='2026-04-08T20:03:00Z' SSH_USER=dokku SSH_NAME=alice "$REPO_ROOT/user-auth" dokku alice config:set myapp SECRET_KEY_BASE=supersecret RAILS_ENV=production
 assert_status 0
 
+assert_eq 'alice' "$(db_query_single "SELECT actor_name FROM events WHERE classification = 'dokku_command' LIMIT 1;")"
+assert_eq 'user' "$(db_query_single "SELECT actor_type FROM events WHERE classification = 'dokku_command' LIMIT 1;")"
+assert_eq 'SSH_NAME' "$(db_query_single "SELECT json_extract(meta_json, '$.actor_source') FROM events WHERE classification = 'dokku_command' LIMIT 1;")"
 command_meta="$(db_query_single "SELECT json_extract(meta_json, '$.command') FROM events WHERE classification = 'dokku_command' LIMIT 1;")"
 assert_contains "$command_meta" 'SECRET_KEY_BASE=[REDACTED]'
 assert_contains "$command_meta" 'RAILS_ENV=[REDACTED]'
