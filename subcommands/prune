@@ -57,6 +57,10 @@ if [[ -n "$classification" ]]; then
 fi
 
 ts="$(audit_now_utc)"
+actor_name="$(audit_safe_local_actor_name)"
+actor_source="$(audit_safe_local_actor_source)"
+actor_type="$(audit_actor_type_from_name "$actor_name")"
+meta_json="$(audit_json_patch_objects "{\"older_than_days\":${older_than}}" "$(audit_local_actor_meta_json "$actor_source")")"
 deleted_count="$(audit_db_query_single "BEGIN IMMEDIATE;
 DELETE FROM events WHERE ${where_clause};
 CREATE TEMP TABLE audit_prune_state(value INTEGER NOT NULL);
@@ -89,11 +93,11 @@ INSERT INTO events (
   NULL,
   NULL,
   NULL,
-  'system',
-  NULL,
+  $(audit_sql_quote "$actor_type"),
+  $(audit_sql_nullable "$actor_name"),
   NULL,
   'prune completed',
-  json_object('older_than_days', ${older_than}, 'deleted_count', (SELECT value FROM audit_prune_state LIMIT 1)),
+  json_patch(json($(audit_sql_quote "$meta_json")), json_object('deleted_count', (SELECT value FROM audit_prune_state LIMIT 1))),
   $(audit_sql_quote "$ts")
 );
 SELECT value FROM audit_prune_state LIMIT 1;

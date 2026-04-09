@@ -384,10 +384,140 @@ audit_actor_type_from_name() {
   printf 'system\n'
 }
 
+audit_override_or_env() {
+  local override_name="$1"
+  local fallback_name="$2"
+
+  if [[ -n "$override_name" ]] && [[ -n "${!override_name+x}" ]]; then
+    printf '%s\n' "${!override_name}"
+    return 0
+  fi
+
+  if [[ -n "$fallback_name" ]] && [[ -n "${!fallback_name+x}" ]]; then
+    printf '%s\n' "${!fallback_name}"
+    return 0
+  fi
+
+  printf '\n'
+}
+
+audit_effective_user() {
+  if [[ -n "${DOKKU_AUDIT_EFFECTIVE_USER+x}" ]]; then
+    printf '%s\n' "$DOKKU_AUDIT_EFFECTIVE_USER"
+    return 0
+  fi
+
+  if id -un >/dev/null 2>&1; then
+    id -un
+    return 0
+  fi
+
+  if [[ -n "${USER:-}" ]]; then
+    printf '%s\n' "$USER"
+    return 0
+  fi
+
+  printf '\n'
+}
+
+audit_local_user() {
+  local value
+
+  value="$(audit_override_or_env DOKKU_AUDIT_LOCAL_USER LOGNAME)"
+  if [[ -n "$value" ]]; then
+    printf '%s\n' "$value"
+    return 0
+  fi
+
+  value="$(audit_override_or_env DOKKU_AUDIT_LOCAL_USER USER)"
+  printf '%s\n' "$value"
+}
+
+audit_sudo_user() {
+  audit_override_or_env DOKKU_AUDIT_SUDO_USER SUDO_USER
+}
+
+audit_safe_local_actor_name() {
+  local sudo_user
+  local local_user
+  local effective_user
+
+  sudo_user="$(audit_sudo_user)"
+  if [[ -n "$sudo_user" ]]; then
+    printf '%s\n' "$sudo_user"
+    return 0
+  fi
+
+  local_user="$(audit_local_user)"
+  if [[ -n "$local_user" ]]; then
+    printf '%s\n' "$local_user"
+    return 0
+  fi
+
+  effective_user="$(audit_effective_user)"
+  printf '%s\n' "$effective_user"
+}
+
+audit_safe_local_actor_source() {
+  local sudo_user
+  local local_user
+  local effective_user
+
+  sudo_user="$(audit_sudo_user)"
+  if [[ -n "$sudo_user" ]]; then
+    printf 'SUDO_USER\n'
+    return 0
+  fi
+
+  local_user="$(audit_local_user)"
+  if [[ -n "$local_user" ]]; then
+    printf 'LOCAL_USER\n'
+    return 0
+  fi
+
+  effective_user="$(audit_effective_user)"
+  if [[ -n "$effective_user" ]]; then
+    printf 'EFFECTIVE_USER\n'
+    return 0
+  fi
+
+  printf '\n'
+}
+
+audit_sudo_actor_name() {
+  audit_sudo_user
+}
+
+audit_local_actor_meta_json() {
+  local actor_source="$1"
+  local sudo_user
+  local local_user
+  local effective_user
+
+  sudo_user="$(audit_sudo_user)"
+  local_user="$(audit_local_user)"
+  effective_user="$(audit_effective_user)"
+
+  printf '{"actor_source":%s,"sudo_user":%s,"local_user":%s,"effective_user":%s}' \
+    "$(audit_json_or_null "$actor_source")" \
+    "$(audit_json_or_null "$sudo_user")" \
+    "$(audit_json_or_null "$local_user")" \
+    "$(audit_json_or_null "$effective_user")"
+}
+
 audit_actor_label_sql_expr() {
   cat <<'SQL'
 CASE
   WHEN actor_type = 'system' THEN 'dokku-system'
+  WHEN COALESCE(json_extract(meta_json, '$.actor_source'), '') = 'SUDO_USER'
+    AND COALESCE(json_extract(meta_json, '$.sudo_user'), '') != ''
+  THEN 'sudo-user:' || json_extract(meta_json, '$.sudo_user')
+  WHEN COALESCE(json_extract(meta_json, '$.actor_source'), '') IN ('LOCAL_USER', 'EFFECTIVE_USER')
+    AND COALESCE(json_extract(meta_json, '$.local_user'), '') != ''
+  THEN 'unix-user:' || json_extract(meta_json, '$.local_user')
+  WHEN COALESCE(json_extract(meta_json, '$.actor_source'), '') = 'EFFECTIVE_USER'
+    AND COALESCE(json_extract(meta_json, '$.effective_user'), '') != ''
+  THEN 'unix-user:' || json_extract(meta_json, '$.effective_user')
   WHEN COALESCE(json_extract(meta_json, '$.actor_source'), '') = 'SSH_NAME'
     AND COALESCE(json_extract(meta_json, '$.ssh_name'), '') != ''
   THEN 'ssh-key:' || json_extract(meta_json, '$.ssh_name')
@@ -1275,8 +1405,16 @@ audit_insert_maintenance_event() {
   local classification="$2"
   local message="$3"
   local meta_json="$4"
+  local actor_name
+  local actor_source
+  local actor_type
 
-  audit_insert_event "" "maintenance" "$action" "success" "$classification" "manual" "" "" "" "system" "" "" "$message" "$meta_json"
+  actor_name="$(audit_safe_local_actor_name)"
+  actor_source="$(audit_safe_local_actor_source)"
+  actor_type="$(audit_actor_type_from_name "$actor_name")"
+  meta_json="$(audit_json_patch_objects "$meta_json" "$(audit_local_actor_meta_json "$actor_source")")"
+
+  audit_insert_event "" "maintenance" "$action" "success" "$classification" "manual" "" "" "" "$actor_type" "$actor_name" "" "$message" "$meta_json"
 }
 
 AUDIT_CONTEXT_ACTOR_TYPE="system"
@@ -1343,6 +1481,8 @@ audit_claim_pending_event_actor_context() {
   local claim
   local command_text=""
   local source_subcommand=""
+  local sudo_actor_name
+  local sudo_actor_source
 
   AUDIT_CONTEXT_ACTOR_TYPE="system"
   AUDIT_CONTEXT_ACTOR_NAME=""
@@ -1371,7 +1511,16 @@ COMMIT;
 SQL
 )"
 
-  [[ -n "$claim" ]] || return 0
+  if [[ -z "$claim" ]]; then
+    sudo_actor_name="$(audit_sudo_actor_name)"
+    if [[ -n "$sudo_actor_name" ]]; then
+      sudo_actor_source='SUDO_USER'
+      AUDIT_CONTEXT_ACTOR_TYPE='user'
+      AUDIT_CONTEXT_ACTOR_NAME="$sudo_actor_name"
+      AUDIT_CONTEXT_ACTOR_META_JSON="$(audit_local_actor_meta_json "$sudo_actor_source")"
+    fi
+    return 0
+  fi
 
   IFS=$'\t' read -r AUDIT_CONTEXT_ACTOR_TYPE AUDIT_CONTEXT_ACTOR_NAME AUDIT_CONTEXT_ACTOR_META_JSON command_text source_subcommand <<< "$claim"
   AUDIT_CONTEXT_ACTOR_META_JSON="$(audit_json_patch_objects "$AUDIT_CONTEXT_ACTOR_META_JSON" "{\"triggered_by_command\":$(audit_json_or_null "$command_text"),\"triggered_by_subcommand\":$(audit_json_or_null "$source_subcommand")}")"

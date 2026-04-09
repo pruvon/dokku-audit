@@ -21,6 +21,7 @@ audit_handle_scheduler_run() {
   local hostname=""
   local event_id
   local meta_json
+  local sudo_actor_name
 
   : "$scheduler"
   [[ -n "$app" ]] || audit_die "missing app name"
@@ -31,6 +32,14 @@ audit_handle_scheduler_run() {
   claim="$(audit_claim_pending_command_context "$app" "run" "$args_json" "$ts")"
   if [[ -n "$claim" ]]; then
     IFS=$'\t' read -r _ actor_type actor_name actor_source actor_meta_json command_text hostname _ <<< "$claim"
+  else
+    sudo_actor_name="$(audit_sudo_actor_name)"
+    if [[ -n "$sudo_actor_name" ]]; then
+      actor_type='user'
+      actor_name="$sudo_actor_name"
+      actor_source='SUDO_USER'
+      actor_meta_json="$(audit_local_actor_meta_json "$actor_source")"
+    fi
   fi
 
   if [[ -z "$command_text" ]]; then

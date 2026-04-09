@@ -94,3 +94,25 @@ assert_eq 'alice' "$(db_query_single "SELECT actor_name FROM events WHERE classi
 assert_eq 'apps:create' "$(db_query_single "SELECT json_extract(meta_json, '$.triggered_by_subcommand') FROM events WHERE classification = 'app_create' LIMIT 1;")"
 assert_eq 'alice' "$(db_query_single "SELECT actor_name FROM events WHERE classification = 'app_destroy' LIMIT 1;")"
 assert_eq 'apps:destroy' "$(db_query_single "SELECT json_extract(meta_json, '$.triggered_by_subcommand') FROM events WHERE classification = 'app_destroy' LIMIT 1;")"
+
+setup_test_env actor_propagation_local_sudo_fallback
+run_at '2026-04-08T21:30:00Z' "$REPO_ROOT/subcommands/migrate"
+assert_status 0
+
+run_cmd env DOKKU_AUDIT_NOW='2026-04-08T21:30:01Z' DOKKU_AUDIT_SUDO_USER=pruvon DOKKU_AUDIT_LOCAL_USER=root DOKKU_AUDIT_EFFECTIVE_USER=root "$REPO_ROOT/post-config-update" myapp set FOO=bar
+assert_status 0
+
+assert_eq 'pruvon' "$(db_query_single "SELECT actor_name FROM events WHERE classification = 'config_change' LIMIT 1;")"
+assert_eq 'SUDO_USER' "$(db_query_single "SELECT json_extract(meta_json, '$.actor_source') FROM events WHERE classification = 'config_change' LIMIT 1;")"
+assert_eq 'pruvon' "$(db_query_single "SELECT json_extract(meta_json, '$.sudo_user') FROM events WHERE classification = 'config_change' LIMIT 1;")"
+
+setup_test_env actor_propagation_local_sudo_run
+run_at '2026-04-08T21:40:00Z' "$REPO_ROOT/subcommands/migrate"
+assert_status 0
+
+run_cmd env DOKKU_AUDIT_NOW='2026-04-08T21:40:01Z' DOKKU_AUDIT_SUDO_USER=pruvon DOKKU_AUDIT_LOCAL_USER=root DOKKU_AUDIT_EFFECTIVE_USER=root "$REPO_ROOT/scheduler-run" docker-local myapp ls -lah
+assert_status 0
+
+assert_eq 'pruvon' "$(db_query_single "SELECT actor_name FROM events WHERE classification = 'dokku_run' LIMIT 1;")"
+assert_eq 'SUDO_USER' "$(db_query_single "SELECT json_extract(meta_json, '$.actor_source') FROM events WHERE classification = 'dokku_run' LIMIT 1;")"
+assert_eq 'pruvon' "$(db_query_single "SELECT json_extract(meta_json, '$.sudo_user') FROM events WHERE classification = 'dokku_run' LIMIT 1;")"

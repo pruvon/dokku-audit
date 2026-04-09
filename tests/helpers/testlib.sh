@@ -20,6 +20,9 @@ setup_test_env() {
   unset DOKKU_AUDIT_RANDOM_HEX
   unset DOKKU_AUDIT_RUNTIME_USER
   unset DOKKU_AUDIT_RUNTIME_GROUP
+  export DOKKU_AUDIT_SUDO_USER=""
+  export DOKKU_AUDIT_LOCAL_USER=""
+  export DOKKU_AUDIT_EFFECTIVE_USER=""
 }
 
 setup_test_env_with_runtime_user() {

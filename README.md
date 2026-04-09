@@ -127,7 +127,7 @@ Deploy completion is classified as either `source_deploy` or `release_only`.
 - `dokku audit:migrate [--dry-run] [--verbose]`: Applies unapplied schema migrations. Use `--dry-run` to preview changes and `--verbose` for more detail.
 - `dokku audit:last-deploys [--limit N] [--app APP] [--classification VALUE] [--format table|json|jsonl] [--quiet]`: Shows the most recent completed deploy events. Use `--app APP` to scope to one app, `--classification source_deploy` or `--classification release_only` to focus on one deploy class, and `--format` for machine-readable output.
 - `dokku audit:timeline <app> [--limit N] [--since ISO8601] [--until ISO8601] [--category VALUE] [--format table|json|jsonl] [--quiet]`: Shows the event history for one app. Use `--format` to switch output style.
-- `dokku audit:recent [--limit N] [--category VALUE] [--classification VALUE] [--status VALUE] [--since ISO8601] [--format table|json|jsonl] [--quiet]`: Shows recent events across all apps. In table output, actor labels are normalized as `ssh-key:<label>`, `ssh-user:<user>`, or `dokku-system`. Use `--format` for JSON or JSONL output.
+- `dokku audit:recent [--limit N] [--category VALUE] [--classification VALUE] [--status VALUE] [--since ISO8601] [--format table|json|jsonl] [--quiet]`: Shows recent events across all apps. In table output, actor labels are normalized as `ssh-key:<label>`, `ssh-user:<user>`, `sudo-user:<user>`, `unix-user:<user>`, or `dokku-system`. Use `--format` for JSON or JSONL output.
 - `dokku audit:show <event-id> [--format table|json]`: Shows full details for one event. Use it after `last-deploys`, `timeline`, or `recent` when you need more context.
 - `dokku audit:export [--format jsonl|json] [--app APP] [--since ISO8601] [--until ISO8601] [--output PATH]`: Exports events as JSON or JSONL. Use `--app` to scope to one app, `--since` / `--until` to bound the time range, and `--output` to write to a file.
 - `dokku audit:backup [--output PATH]`: Creates a safe SQLite backup of the audit database. Recommended before major upgrades or cleanup.
@@ -219,6 +219,8 @@ dokku audit:timeline myapp --format json
 - General command audit redacts `config:set` values and `dokku run --env` values before storing command metadata.
 - Internal follow-on events store the sanitized triggering Dokku command when actor propagation is possible.
 - If you see `ssh-key:default`, `default` is the Dokku `SSH_NAME` label attached to the matching key, not a Unix username.
+- If a Dokku command is run locally via `sudo`, follow-on events and maintenance events can attribute it as `sudo-user:<user>` from `SUDO_USER`.
+- If a command runs locally without SSH and without `sudo`, top-level maintenance commands can fall back to `unix-user:<user>` from the local process environment.
 - `dokku-system` means Dokku triggered the event internally and no user/key identity was available at that trigger point.
 - `user-auth` command audit keeps actor attribution for meaningful commands but skips noisy read-only commands such as `audit:*`, `logs`, `config`, `*:list`, `*:links`, `*:app-links`, `*:report`, `*:info`, `*:show`, `*:exists`, `--version`, and `ps:retire`.
 - Audit failures are best-effort by default and should not break successful Dokku app operations.

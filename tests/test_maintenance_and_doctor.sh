@@ -45,3 +45,18 @@ sqlite3 "$(db_path)" 'PRAGMA application_id = 999;'
 run_cmd "$REPO_ROOT/subcommands/doctor"
 assert_status 1
 assert_contains "$RUN_OUTPUT" 'issue: application_id mismatch: expected 1145132356, got 999'
+
+setup_test_env maintenance_local_actor
+run_at '2026-04-08T20:00:00Z' "$REPO_ROOT/subcommands/migrate"
+assert_status 0
+
+run_cmd env DOKKU_AUDIT_NOW='2026-04-08T20:01:00Z' DOKKU_AUDIT_SUDO_USER=ubuntu DOKKU_AUDIT_LOCAL_USER=root DOKKU_AUDIT_EFFECTIVE_USER=root "$REPO_ROOT/update"
+assert_status 0
+assert_eq 'ubuntu' "$(db_query_single "SELECT actor_name FROM events WHERE classification = 'maintenance_migrate' AND message = 'plugin update maintenance completed' LIMIT 1;")"
+assert_eq 'SUDO_USER' "$(db_query_single "SELECT json_extract(meta_json, '$.actor_source') FROM events WHERE classification = 'maintenance_migrate' AND message = 'plugin update maintenance completed' LIMIT 1;")"
+assert_eq 'ubuntu' "$(db_query_single "SELECT json_extract(meta_json, '$.sudo_user') FROM events WHERE classification = 'maintenance_migrate' AND message = 'plugin update maintenance completed' LIMIT 1;")"
+
+run_cmd "$REPO_ROOT/subcommands/recent" --limit 1
+assert_status 0
+assert_contains "$RUN_OUTPUT" 'sudo-user:ubuntu'
+assert_contains "$RUN_OUTPUT" 'plugin update maintenance completed'
