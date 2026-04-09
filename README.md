@@ -105,7 +105,7 @@ Default paths:
 ## What The Plugin Records
 
 - App create and destroy events
-- Selected Dokku command invocations recorded through `user-auth`, with actor attribution, target app extraction for supported app-scoped commands, and noisy read-only polling/report commands skipped
+- Selected Dokku command invocations recorded through `user-auth`, with actor attribution, target app extraction for supported app-scoped commands, noisy read-only polling/report commands skipped, and `run`/`enter` recorded only through their structured events
 - Deploy flow events such as `receive-app`, `deploy-source-set`, `post-extract`, and `post-deploy`
 - Structured `dokku run` and `dokku enter` events, including actor and target container/process context when Dokku exposes it
 - Config changes with value redaction

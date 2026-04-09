@@ -14,8 +14,8 @@ assert_status 0
 run_at '2026-04-08T20:01:02Z' "$REPO_ROOT/scheduler-post-run" docker-local myapp myapp.run.123
 assert_status 0
 
-assert_eq '2' "$(db_query_single "SELECT COUNT(1) FROM events WHERE category = 'command';")"
-assert_eq '1' "$(db_query_single "SELECT COUNT(1) FROM events WHERE classification = 'dokku_command';")"
+assert_eq '1' "$(db_query_single "SELECT COUNT(1) FROM events WHERE category = 'command';")"
+assert_eq '0' "$(db_query_single "SELECT COUNT(1) FROM events WHERE classification = 'dokku_command';")"
 assert_eq '1' "$(db_query_single "SELECT COUNT(1) FROM events WHERE classification = 'dokku_run';")"
 assert_eq 'alice' "$(db_query_single "SELECT actor_name FROM events WHERE classification = 'dokku_run' LIMIT 1;")"
 assert_eq 'SSH_NAME' "$(db_query_single "SELECT json_extract(meta_json, '$.actor_source') FROM events WHERE classification = 'dokku_run' LIMIT 1;")"
@@ -73,7 +73,8 @@ assert_status 0
 run_at '2026-04-08T20:02:01Z' "$REPO_ROOT/scheduler-enter" docker-local myapp --container-id abc123 echo hi
 assert_status 0
 
-assert_eq '2' "$(db_query_single "SELECT COUNT(1) FROM events WHERE category = 'command';")"
+assert_eq '1' "$(db_query_single "SELECT COUNT(1) FROM events WHERE category = 'command';")"
+assert_eq '0' "$(db_query_single "SELECT COUNT(1) FROM events WHERE classification = 'dokku_command';")"
 assert_eq '1' "$(db_query_single "SELECT COUNT(1) FROM events WHERE classification = 'dokku_enter';")"
 assert_eq 'abc123' "$(db_query_single "SELECT json_extract(meta_json, '$.container_id') FROM events WHERE classification = 'dokku_enter' LIMIT 1;")"
 assert_eq 'echo' "$(db_query_single "SELECT json_extract(meta_json, '$.args[0]') FROM events WHERE classification = 'dokku_enter' LIMIT 1;")"

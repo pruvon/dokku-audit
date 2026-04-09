@@ -74,14 +74,15 @@ audit_handle_user_auth() {
   message="$(audit_message_for_command_invoke "$command_text" "$subcommand")"
   meta_json="$(audit_command_event_meta_json "$actor_source" "$command_text" "$subcommand" "$general_args_json" "$container_type" "$container_id" "$hostname" "authorized")"
 
-  audit_insert_event "$app" "command" "invoke" "success" "dokku_command" "user-auth" "" "" "" "$actor_type" "$actor_name" "" "$message" "$meta_json" "$ts" "$ts"
-
   case "$subcommand" in
     run|enter)
       [[ -n "$app" ]] || return 0
       audit_store_pending_command_context "$app" "$subcommand" "$command_text" "$match_args_json" "$actor_type" "$actor_name" "$actor_source" "$hostname" "$ts"
+      return 0
       ;;
   esac
+
+  audit_insert_event "$app" "command" "invoke" "success" "dokku_command" "user-auth" "" "" "" "$actor_type" "$actor_name" "" "$message" "$meta_json" "$ts" "$ts"
 }
 
 audit_trigger_guard "user-auth" "" audit_handle_user_auth "$@"
