@@ -3,7 +3,7 @@ set -eo pipefail
 [[ $DOKKU_TRACE ]] && set -x
 
 if [[ -z "${AUDIT_PLUGIN_ROOT:-}" ]]; then
-  AUDIT_PLUGIN_ROOT="${PLUGIN_AVAILABLE_PATH:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+  AUDIT_PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 fi
 
 PLUGIN_AVAILABLE_PATH="$AUDIT_PLUGIN_ROOT"
