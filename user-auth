@@ -54,7 +54,7 @@ audit_handle_user_auth() {
   parsed_container_id="$AUDIT_PARSED_CONTAINER_ID"
   parsed_match_args=("${AUDIT_PARSED_MATCH_ARGS[@]}")
 
-  if ! audit_should_record_user_auth_command "$parsed_subcommand"; then
+  if ! audit_should_record_user_auth_command "$parsed_subcommand" "$parsed_app" "${AUDIT_PARSED_COMMAND_ARGS[@]}"; then
     return 0
   fi
 
@@ -68,10 +68,10 @@ audit_handle_user_auth() {
   app="$parsed_app"
   container_type="$parsed_container_type"
   container_id="$parsed_container_id"
-  general_args_json="$(audit_json_array_from_args "${AUDIT_PARSED_TRAILING_TOKENS[@]}")"
+  general_args_json="$(audit_json_array_from_args "${AUDIT_PARSED_COMMAND_ARGS[@]}")"
   match_args_json="$(audit_json_array_from_args "${parsed_match_args[@]}")"
   command_text="$(audit_prefixed_dokku_command_text "${sanitized_tokens[@]}")"
-  message="$(audit_message_for_command_invoke "$subcommand")"
+  message="$(audit_message_for_command_invoke "$command_text" "$subcommand")"
   meta_json="$(audit_command_event_meta_json "$actor_source" "$command_text" "$subcommand" "$general_args_json" "$container_type" "$container_id" "$hostname" "authorized")"
 
   audit_insert_event "$app" "command" "invoke" "success" "dokku_command" "user-auth" "" "" "" "$actor_type" "$actor_name" "" "$message" "$meta_json" "$ts" "$ts"

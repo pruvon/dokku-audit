@@ -75,8 +75,8 @@ if [[ -n "$since" ]]; then
 fi
 
 event_json_sql="$(audit_event_json_sql)"
-table_sql="SELECT id, ts, COALESCE(app, '-'), category, action, COALESCE(classification, '-'), status, COALESCE(message, '-') FROM events WHERE ${where_clause} ORDER BY ts DESC LIMIT ${limit};"
+table_sql="SELECT id, ts, COALESCE(app, '-'), COALESCE(NULLIF(actor_name, ''), actor_type, '-'), category, action, COALESCE(classification, '-'), status, COALESCE(message, '-') FROM events WHERE ${where_clause} ORDER BY ts DESC LIMIT ${limit};"
 jsonl_sql="SELECT ${event_json_sql} FROM events WHERE ${where_clause} ORDER BY ts DESC LIMIT ${limit};"
 json_sql="SELECT COALESCE(json_group_array(json(event_json)), '[]') FROM (SELECT ${event_json_sql} AS event_json FROM events WHERE ${where_clause} ORDER BY ts DESC LIMIT ${limit});"
 
-audit_emit_query_output "$format" $'ID\tTIME\tAPP\tCATEGORY\tACTION\tCLASSIFICATION\tSTATUS\tMESSAGE' "$table_sql" "$jsonl_sql" "$json_sql" "" "$quiet"
+audit_emit_query_output "$format" $'ID\tTIME\tAPP\tACTOR\tCATEGORY\tACTION\tCLASSIFICATION\tSTATUS\tMESSAGE' "$table_sql" "$jsonl_sql" "$json_sql" "" "$quiet"

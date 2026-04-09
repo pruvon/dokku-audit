@@ -44,9 +44,25 @@ run_cmd env DOKKU_AUDIT_NOW='2026-04-08T20:01:04Z' "$REPO_ROOT/user-auth" dokku 
 assert_status 0
 run_cmd env DOKKU_AUDIT_NOW='2026-04-08T20:01:05Z' "$REPO_ROOT/user-auth" dokku alice audit:recent
 assert_status 0
+run_cmd env DOKKU_AUDIT_NOW='2026-04-08T20:01:06Z' "$REPO_ROOT/user-auth" dokku alice --version
+assert_status 0
+run_cmd env DOKKU_AUDIT_NOW='2026-04-08T20:01:07Z' "$REPO_ROOT/user-auth" dokku alice postgres:links database
+assert_status 0
+run_cmd env DOKKU_AUDIT_NOW='2026-04-08T20:01:08Z' "$REPO_ROOT/user-auth" dokku alice redis:app-links myapp
+assert_status 0
+run_cmd env DOKKU_AUDIT_NOW='2026-04-08T20:01:09Z' "$REPO_ROOT/user-auth" dokku alice postgres:connect database
+assert_status 0
+run_cmd env DOKKU_AUDIT_NOW='2026-04-08T20:01:10Z' "$REPO_ROOT/user-auth" dokku alice logs myapp
+assert_status 0
+run_cmd env DOKKU_AUDIT_NOW='2026-04-08T20:01:11Z' "$REPO_ROOT/user-auth" dokku alice config myapp
+assert_status 0
+run_cmd env DOKKU_AUDIT_NOW='2026-04-08T20:01:12Z' "$REPO_ROOT/user-auth" dokku alice resource:limit myapp
+assert_status 0
 
-assert_eq '0' "$(db_query_single "SELECT COUNT(1) FROM events WHERE category = 'command';")"
+assert_eq '1' "$(db_query_single "SELECT COUNT(1) FROM events WHERE category = 'command';")"
 assert_eq '0' "$(db_query_single 'SELECT COUNT(1) FROM pending_command_contexts;')"
+assert_eq 'postgres:connect' "$(db_query_single "SELECT json_extract(meta_json, '$.subcommand') FROM events WHERE classification = 'dokku_command' LIMIT 1;")"
+assert_eq 'database' "$(db_query_single "SELECT json_extract(meta_json, '$.args[0]') FROM events WHERE classification = 'dokku_command' LIMIT 1;")"
 
 setup_test_env command_audit_enter
 run_at '2026-04-08T20:00:00Z' "$REPO_ROOT/subcommands/migrate"
@@ -73,10 +89,34 @@ assert_status 0
 run_cmd env DOKKU_AUDIT_NOW='2026-04-08T20:03:00Z' SSH_USER=dokku SSH_NAME=alice "$REPO_ROOT/user-auth" dokku alice config:set myapp SECRET_KEY_BASE=supersecret RAILS_ENV=production
 assert_status 0
 
+assert_eq 'myapp' "$(db_query_single "SELECT app FROM events WHERE classification = 'dokku_command' LIMIT 1;")"
 assert_eq 'alice' "$(db_query_single "SELECT actor_name FROM events WHERE classification = 'dokku_command' LIMIT 1;")"
 assert_eq 'user' "$(db_query_single "SELECT actor_type FROM events WHERE classification = 'dokku_command' LIMIT 1;")"
 assert_eq 'SSH_NAME' "$(db_query_single "SELECT json_extract(meta_json, '$.actor_source') FROM events WHERE classification = 'dokku_command' LIMIT 1;")"
+assert_eq 'SECRET_KEY_BASE=[REDACTED]' "$(db_query_single "SELECT json_extract(meta_json, '$.args[0]') FROM events WHERE classification = 'dokku_command' LIMIT 1;")"
+assert_eq 'RAILS_ENV=[REDACTED]' "$(db_query_single "SELECT json_extract(meta_json, '$.args[1]') FROM events WHERE classification = 'dokku_command' LIMIT 1;")"
 command_meta="$(db_query_single "SELECT json_extract(meta_json, '$.command') FROM events WHERE classification = 'dokku_command' LIMIT 1;")"
 assert_contains "$command_meta" 'SECRET_KEY_BASE=[REDACTED]'
 assert_contains "$command_meta" 'RAILS_ENV=[REDACTED]'
 assert_not_contains "$command_meta" 'supersecret'
+
+setup_test_env command_audit_resource_limit
+run_at '2026-04-08T20:00:00Z' "$REPO_ROOT/subcommands/migrate"
+assert_status 0
+
+run_cmd env DOKKU_AUDIT_NOW='2026-04-08T20:04:00Z' SSH_USER=dokku SSH_NAME=alice "$REPO_ROOT/user-auth" dokku alice resource:limit myapp --memory 512m --cpu 2
+assert_status 0
+
+assert_eq '1' "$(db_query_single "SELECT COUNT(1) FROM events WHERE classification = 'dokku_command';")"
+assert_eq 'myapp' "$(db_query_single "SELECT app FROM events WHERE classification = 'dokku_command' LIMIT 1;")"
+assert_eq '--memory' "$(db_query_single "SELECT json_extract(meta_json, '$.args[0]') FROM events WHERE classification = 'dokku_command' LIMIT 1;")"
+assert_eq '512m' "$(db_query_single "SELECT json_extract(meta_json, '$.args[1]') FROM events WHERE classification = 'dokku_command' LIMIT 1;")"
+assert_eq '--cpu' "$(db_query_single "SELECT json_extract(meta_json, '$.args[2]') FROM events WHERE classification = 'dokku_command' LIMIT 1;")"
+assert_eq '2' "$(db_query_single "SELECT json_extract(meta_json, '$.args[3]') FROM events WHERE classification = 'dokku_command' LIMIT 1;")"
+
+run_cmd "$REPO_ROOT/subcommands/recent" --limit 1
+assert_status 0
+assert_contains "$RUN_OUTPUT" 'ACTOR'
+assert_contains "$RUN_OUTPUT" 'myapp'
+assert_contains "$RUN_OUTPUT" 'alice'
+assert_contains "$RUN_OUTPUT" 'dokku resource:limit myapp --memory 512m --cpu 2'
