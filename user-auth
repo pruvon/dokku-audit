@@ -27,6 +27,7 @@ audit_handle_user_auth() {
   local meta_json
   local message
   local event_kind
+  local follow_on_event_count=0
   local -a command_tokens=()
   local -a sanitized_tokens=()
   local token
@@ -81,8 +82,9 @@ audit_handle_user_auth() {
 
   while IFS= read -r event_kind; do
     [[ -n "$event_kind" ]] || continue
+    follow_on_event_count=$((follow_on_event_count + 1))
     audit_store_pending_event_actor_context "$app" "$event_kind" "$subcommand" "$command_text" "$actor_type" "$actor_name" "$actor_meta_json" "$ts"
-  done < <(audit_follow_on_event_kinds_lines "$subcommand" "$app")
+  done < <(audit_follow_on_event_kinds_lines "$subcommand" "$app" "${AUDIT_PARSED_TRAILING_TOKENS[@]}")
 
   case "$subcommand" in
     run|enter)
@@ -91,6 +93,10 @@ audit_handle_user_auth() {
       return 0
       ;;
   esac
+
+  if [[ "$follow_on_event_count" -gt 0 ]]; then
+    return 0
+  fi
 
   audit_insert_event "$app" "command" "invoke" "success" "dokku_command" "user-auth" "" "" "" "$actor_type" "$actor_name" "" "$message" "$meta_json" "$ts" "$ts"
 }

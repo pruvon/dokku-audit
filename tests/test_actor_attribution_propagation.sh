@@ -43,6 +43,7 @@ assert_status 0
 run_at '2026-04-08T21:00:05Z' "$REPO_ROOT/post-deploy" myapp 5000 172.17.0.8 dokku/myapp:latest
 assert_status 0
 
+assert_eq '0' "$(db_query_single "SELECT COUNT(1) FROM events WHERE classification = 'dokku_command';")"
 assert_eq '4' "$(db_query_single "SELECT COUNT(1) FROM events WHERE category = 'deploy' AND actor_name = 'alice';")"
 assert_eq 'alice' "$(db_query_single "SELECT actor_name FROM events WHERE classification = 'source_received' LIMIT 1;")"
 assert_eq 'alice' "$(db_query_single "SELECT actor_name FROM events WHERE classification = 'source_deploy' LIMIT 1;")"
@@ -64,11 +65,11 @@ assert_status 0
 run_at '2026-04-08T21:10:03Z' "$REPO_ROOT/post-deploy" myapp 5000 172.17.0.9 dokku/myapp:latest
 assert_status 0
 
-assert_eq 'default' "$(db_query_single "SELECT actor_name FROM events WHERE classification = 'dokku_command' LIMIT 1;")"
-assert_eq 'dokku' "$(db_query_single "SELECT json_extract(meta_json, '$.ssh_user') FROM events WHERE classification = 'dokku_command' LIMIT 1;")"
-assert_eq 'default' "$(db_query_single "SELECT json_extract(meta_json, '$.ssh_name') FROM events WHERE classification = 'dokku_command' LIMIT 1;")"
-assert_eq 'SHA256:default-key' "$(db_query_single "SELECT json_extract(meta_json, '$.ssh_key_fingerprint') FROM events WHERE classification = 'dokku_command' LIMIT 1;")"
+assert_eq '0' "$(db_query_single "SELECT COUNT(1) FROM events WHERE classification = 'dokku_command';")"
 assert_eq 'default' "$(db_query_single "SELECT actor_name FROM events WHERE classification = 'config_change' LIMIT 1;")"
+assert_eq 'dokku' "$(db_query_single "SELECT json_extract(meta_json, '$.ssh_user') FROM events WHERE classification = 'config_change' LIMIT 1;")"
+assert_eq 'default' "$(db_query_single "SELECT json_extract(meta_json, '$.ssh_name') FROM events WHERE classification = 'config_change' LIMIT 1;")"
+assert_eq 'SHA256:default-key' "$(db_query_single "SELECT json_extract(meta_json, '$.ssh_key_fingerprint') FROM events WHERE classification = 'config_change' LIMIT 1;")"
 assert_eq 'config:set' "$(db_query_single "SELECT json_extract(meta_json, '$.triggered_by_subcommand') FROM events WHERE classification = 'config_change' LIMIT 1;")"
 assert_eq 'dokku config:set myapp SECRET_KEY_BASE=[REDACTED]' "$(db_query_single "SELECT json_extract(meta_json, '$.triggered_by_command') FROM events WHERE classification = 'config_change' LIMIT 1;")"
 assert_eq 'default' "$(db_query_single "SELECT actor_name FROM events WHERE classification = 'release_only' LIMIT 1;")"
@@ -88,6 +89,7 @@ assert_status 0
 run_at '2026-04-08T21:20:04Z' "$REPO_ROOT/app-destroy" myapp
 assert_status 0
 
+assert_eq '0' "$(db_query_single "SELECT COUNT(1) FROM events WHERE classification = 'dokku_command';")"
 assert_eq 'alice' "$(db_query_single "SELECT actor_name FROM events WHERE classification = 'app_create' LIMIT 1;")"
 assert_eq 'apps:create' "$(db_query_single "SELECT json_extract(meta_json, '$.triggered_by_subcommand') FROM events WHERE classification = 'app_create' LIMIT 1;")"
 assert_eq 'alice' "$(db_query_single "SELECT actor_name FROM events WHERE classification = 'app_destroy' LIMIT 1;")"

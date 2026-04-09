@@ -75,7 +75,8 @@ if [[ -n "$since" ]]; then
 fi
 
 event_json_sql="$(audit_event_json_sql)"
-table_sql="SELECT id, ts, COALESCE(app, '-'), COALESCE(NULLIF(actor_name, ''), actor_type, '-'), category, action, COALESCE(classification, '-'), status, COALESCE(message, '-') FROM events WHERE ${where_clause} ORDER BY ts DESC LIMIT ${limit};"
+actor_label_sql="$(audit_actor_label_sql_expr)"
+table_sql="SELECT id, ts, COALESCE(app, '-'), ${actor_label_sql}, category, action, COALESCE(classification, '-'), status, COALESCE(message, '-') FROM events WHERE ${where_clause} ORDER BY ts DESC LIMIT ${limit};"
 jsonl_sql="SELECT ${event_json_sql} FROM events WHERE ${where_clause} ORDER BY ts DESC LIMIT ${limit};"
 json_sql="SELECT COALESCE(json_group_array(json(event_json)), '[]') FROM (SELECT ${event_json_sql} AS event_json FROM events WHERE ${where_clause} ORDER BY ts DESC LIMIT ${limit});"
 

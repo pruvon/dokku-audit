@@ -55,6 +55,7 @@ mapping = [
     ("id", payload.get("id")),
     ("ts", payload.get("ts")),
     ("app", payload.get("app") or "-"),
+    ("actor", payload.get("actor_label") or payload.get("actor_name") or payload.get("actor_type") or "-"),
     ("category", payload.get("category")),
     ("action", payload.get("action")),
     ("status", payload.get("status")),

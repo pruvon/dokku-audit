@@ -91,21 +91,24 @@ setup_test_env command_audit_redaction
 run_at '2026-04-08T20:00:00Z' "$REPO_ROOT/subcommands/migrate"
 assert_status 0
 
-run_cmd env DOKKU_AUDIT_NOW='2026-04-08T20:03:00Z' SSH_USER=dokku SSH_NAME=alice "$REPO_ROOT/user-auth" dokku alice config:set myapp SECRET_KEY_BASE=supersecret RAILS_ENV=production
+run_cmd env DOKKU_AUDIT_NOW='2026-04-08T20:03:00Z' SSH_USER=dokku SSH_NAME=alice "$REPO_ROOT/user-auth" dokku alice config:set --no-restart myapp SECRET_KEY_BASE=supersecret RAILS_ENV=production
+assert_status 0
+run_at '2026-04-08T20:03:01Z' "$REPO_ROOT/post-config-update" myapp set SECRET_KEY_BASE=supersecret RAILS_ENV=production
 assert_status 0
 
-assert_eq 'myapp' "$(db_query_single "SELECT app FROM events WHERE classification = 'dokku_command' LIMIT 1;")"
-assert_eq 'alice' "$(db_query_single "SELECT actor_name FROM events WHERE classification = 'dokku_command' LIMIT 1;")"
-assert_eq 'user' "$(db_query_single "SELECT actor_type FROM events WHERE classification = 'dokku_command' LIMIT 1;")"
-assert_eq 'SSH_NAME' "$(db_query_single "SELECT json_extract(meta_json, '$.actor_source') FROM events WHERE classification = 'dokku_command' LIMIT 1;")"
-assert_eq 'dokku' "$(db_query_single "SELECT json_extract(meta_json, '$.ssh_user') FROM events WHERE classification = 'dokku_command' LIMIT 1;")"
-assert_eq 'alice' "$(db_query_single "SELECT json_extract(meta_json, '$.ssh_name') FROM events WHERE classification = 'dokku_command' LIMIT 1;")"
-assert_eq 'SECRET_KEY_BASE=[REDACTED]' "$(db_query_single "SELECT json_extract(meta_json, '$.args[0]') FROM events WHERE classification = 'dokku_command' LIMIT 1;")"
-assert_eq 'RAILS_ENV=[REDACTED]' "$(db_query_single "SELECT json_extract(meta_json, '$.args[1]') FROM events WHERE classification = 'dokku_command' LIMIT 1;")"
-command_meta="$(db_query_single "SELECT json_extract(meta_json, '$.command') FROM events WHERE classification = 'dokku_command' LIMIT 1;")"
+assert_eq '0' "$(db_query_single "SELECT COUNT(1) FROM events WHERE classification = 'dokku_command';")"
+assert_eq 'myapp' "$(db_query_single "SELECT app FROM events WHERE classification = 'config_change' LIMIT 1;")"
+assert_eq 'alice' "$(db_query_single "SELECT actor_name FROM events WHERE classification = 'config_change' LIMIT 1;")"
+assert_eq 'user' "$(db_query_single "SELECT actor_type FROM events WHERE classification = 'config_change' LIMIT 1;")"
+assert_eq 'SSH_NAME' "$(db_query_single "SELECT json_extract(meta_json, '$.actor_source') FROM events WHERE classification = 'config_change' LIMIT 1;")"
+assert_eq 'dokku' "$(db_query_single "SELECT json_extract(meta_json, '$.ssh_user') FROM events WHERE classification = 'config_change' LIMIT 1;")"
+assert_eq 'alice' "$(db_query_single "SELECT json_extract(meta_json, '$.ssh_name') FROM events WHERE classification = 'config_change' LIMIT 1;")"
+assert_eq 'config:set' "$(db_query_single "SELECT json_extract(meta_json, '$.triggered_by_subcommand') FROM events WHERE classification = 'config_change' LIMIT 1;")"
+command_meta="$(db_query_single "SELECT json_extract(meta_json, '$.triggered_by_command') FROM events WHERE classification = 'config_change' LIMIT 1;")"
 assert_contains "$command_meta" 'SECRET_KEY_BASE=[REDACTED]'
 assert_contains "$command_meta" 'RAILS_ENV=[REDACTED]'
 assert_not_contains "$command_meta" 'supersecret'
+assert_eq '0' "$(db_query_single 'SELECT COUNT(1) FROM pending_event_actor_contexts;')"
 
 setup_test_env command_audit_resource_limit
 run_at '2026-04-08T20:00:00Z' "$REPO_ROOT/subcommands/migrate"
@@ -125,5 +128,5 @@ run_cmd "$REPO_ROOT/subcommands/recent" --limit 1
 assert_status 0
 assert_contains "$RUN_OUTPUT" 'ACTOR'
 assert_contains "$RUN_OUTPUT" 'myapp'
-assert_contains "$RUN_OUTPUT" 'alice'
+assert_contains "$RUN_OUTPUT" 'ssh-key:alice'
 assert_contains "$RUN_OUTPUT" 'dokku resource:limit myapp --memory 512m --cpu 2'

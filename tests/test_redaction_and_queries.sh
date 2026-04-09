@@ -65,3 +65,4 @@ assert_contains "$RUN_OUTPUT" 'domains add: example.com, www.example.com'
 run_cmd "$REPO_ROOT/subcommands/show" audit:show 1 --format json
 assert_status 0
 assert_contains "$RUN_OUTPUT" '"id":1'
+assert_contains "$RUN_OUTPUT" '"actor_label":"dokku-system"'

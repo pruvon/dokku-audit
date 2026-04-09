@@ -384,6 +384,23 @@ audit_actor_type_from_name() {
   printf 'system\n'
 }
 
+audit_actor_label_sql_expr() {
+  cat <<'SQL'
+CASE
+  WHEN actor_type = 'system' THEN 'dokku-system'
+  WHEN COALESCE(json_extract(meta_json, '$.actor_source'), '') = 'SSH_NAME'
+    AND COALESCE(json_extract(meta_json, '$.ssh_name'), '') != ''
+  THEN 'ssh-key:' || json_extract(meta_json, '$.ssh_name')
+  WHEN COALESCE(json_extract(meta_json, '$.actor_source'), '') = 'SSH_USER'
+    AND COALESCE(json_extract(meta_json, '$.ssh_user'), '') != ''
+  THEN 'ssh-user:' || json_extract(meta_json, '$.ssh_user')
+  WHEN COALESCE(NULLIF(actor_name, ''), '') != '' THEN actor_name
+  WHEN COALESCE(NULLIF(actor_type, ''), '') != '' THEN actor_type
+  ELSE '-'
+END
+SQL
+}
+
 audit_command_tokens_lines() {
   local -a split_tokens=()
 
@@ -533,11 +550,26 @@ audit_command_uses_first_positional_app() {
   return 1
 }
 
+audit_generic_pre_app_flag_without_value() {
+  local subcommand="${1:-}"
+  local token="${2:-}"
+
+  case "${subcommand}:${token}" in
+    config:set:--encoded|config:set:--no-restart|config:unset:--no-restart|config:clear:--no-restart)
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
 audit_parse_generic_arguments() {
   local subcommand="$1"
   local global_app="$2"
   shift 2 || true
   local -a remaining=("$@")
+  local token
+  local idx=0
 
   AUDIT_PARSED_APP="$global_app"
   AUDIT_PARSED_COMMAND_ARGS=("${remaining[@]}")
@@ -547,9 +579,22 @@ audit_parse_generic_arguments() {
     return 0
   fi
 
-  if [[ -z "$AUDIT_PARSED_APP" ]] && [[ "${#remaining[@]}" -gt 0 ]] && [[ -n "${remaining[0]}" ]] && [[ "${remaining[0]}" != -* ]]; then
-    AUDIT_PARSED_APP="${remaining[0]}"
-    AUDIT_PARSED_COMMAND_ARGS=("${remaining[@]:1}")
+  if [[ -n "$AUDIT_PARSED_APP" ]]; then
+    return 0
+  fi
+
+  while [[ "$idx" -lt "${#remaining[@]}" ]]; do
+    token="${remaining[$idx]}"
+    if audit_generic_pre_app_flag_without_value "$subcommand" "$token"; then
+      idx=$((idx + 1))
+      continue
+    fi
+    break
+  done
+
+  if [[ "$idx" -lt "${#remaining[@]}" ]] && [[ -n "${remaining[$idx]}" ]] && [[ "${remaining[$idx]}" != -* ]]; then
+    AUDIT_PARSED_APP="${remaining[$idx]}"
+    AUDIT_PARSED_COMMAND_ARGS=("${remaining[@]:$((idx + 1))}")
     AUDIT_PARSED_MATCH_ARGS=("${AUDIT_PARSED_COMMAND_ARGS[@]}")
   fi
 }
@@ -725,8 +770,19 @@ audit_should_record_user_auth_command() {
 audit_follow_on_event_kinds_lines() {
   local subcommand="${1:-}"
   local app="${2:-}"
+  shift 2 || true
+  local token
+  local no_restart=false
 
   [[ -n "$app" ]] || return 0
+
+  for token in "$@"; do
+    case "$token" in
+      --no-restart|--no-restart=*)
+        no_restart=true
+        ;;
+    esac
+  done
 
   case "$subcommand" in
     apps:create)
@@ -737,7 +793,9 @@ audit_follow_on_event_kinds_lines() {
       ;;
     config:set|config:unset|config:clear)
       printf 'config\n'
-      printf 'deploy-finish\n'
+      if ! audit_is_true "$no_restart"; then
+        printf 'deploy-finish\n'
+      fi
       ;;
     domains:*)
       printf 'domains\n'
@@ -1029,7 +1087,10 @@ audit_pending_correlation_id() {
 }
 
 audit_event_json_sql() {
-  cat <<'SQL'
+  local actor_label_sql
+  actor_label_sql="$(audit_actor_label_sql_expr)"
+
+  cat <<SQL
 json_object(
   'id', id,
   'ts', ts,
@@ -1044,6 +1105,7 @@ json_object(
   'rev', rev,
   'actor_type', actor_type,
   'actor_name', actor_name,
+  'actor_label', ${actor_label_sql},
   'correlation_id', correlation_id,
   'message', message,
   'meta', json(meta_json),
