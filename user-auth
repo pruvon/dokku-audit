@@ -12,6 +12,12 @@ audit_handle_user_auth() {
   local ssh_name="${2:-}"
   local ts
   local ssh_key_fingerprint
+  local ssh_actor_name
+  local ssh_actor_source
+  local ssh_actor_meta_json
+  local local_actor_name
+  local local_actor_source
+  local local_actor_meta_json
   local actor_name
   local actor_source
   local actor_type
@@ -46,11 +52,25 @@ audit_handle_user_auth() {
   [[ "${#command_tokens[@]}" -gt 0 ]] || return 0
 
   ts="$(audit_now_utc)"
-  actor_name="$(audit_actor_name_from_ssh_context "$ssh_name" "$ssh_user")"
-  actor_source="$(audit_actor_source_from_ssh_context "$ssh_name" "$ssh_user")"
+  ssh_actor_name="$(audit_actor_name_from_ssh_context "$ssh_name" "$ssh_user")"
+  ssh_actor_source="$(audit_actor_source_from_ssh_context "$ssh_name" "$ssh_user")"
   ssh_key_fingerprint="$(audit_resolve_ssh_key_fingerprint "$ssh_name")"
+  ssh_actor_meta_json="$(audit_actor_identity_meta_json "$ssh_actor_source" "$ssh_user" "$ssh_name" "$ssh_key_fingerprint")"
+  local_actor_name="$(audit_safe_local_actor_name)"
+  local_actor_source="$(audit_safe_local_actor_source)"
+  local_actor_meta_json="$(audit_local_actor_meta_json "$local_actor_source")"
+  actor_name="$ssh_actor_name"
+  actor_source="$ssh_actor_source"
+  if audit_should_prefer_local_actor_over_ssh "$ssh_name" "$ssh_user" "$local_actor_source" "$local_actor_name"; then
+    actor_name="$local_actor_name"
+    actor_source="$local_actor_source"
+  fi
+  if [[ -z "$actor_name" ]] && [[ -n "$local_actor_name" ]]; then
+    actor_name="$local_actor_name"
+    actor_source="$local_actor_source"
+  fi
   actor_type="$(audit_actor_type_from_name "$actor_name")"
-  actor_meta_json="$(audit_actor_identity_meta_json "$actor_source" "$ssh_user" "$ssh_name" "$ssh_key_fingerprint")"
+  actor_meta_json="$(audit_merge_actor_identity_meta_json "$actor_source" "$ssh_actor_meta_json" "$local_actor_meta_json")"
   hostname="$(audit_hostname)"
 
   audit_parse_dokku_invocation "${command_tokens[@]}"

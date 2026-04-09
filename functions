@@ -375,6 +375,26 @@ audit_actor_identity_meta_json() {
     "$(audit_json_or_null "$ssh_key_fingerprint")"
 }
 
+audit_is_low_signal_ssh_name() {
+  case "${1:-}" in
+    default)
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
+audit_is_meaningful_host_user() {
+  case "${1:-}" in
+    ""|root|dokku)
+      return 1
+      ;;
+  esac
+
+  return 0
+}
+
 audit_actor_type_from_name() {
   if [[ -n "${1:-}" ]]; then
     printf 'user\n'
@@ -503,6 +523,41 @@ audit_local_actor_meta_json() {
     "$(audit_json_or_null "$sudo_user")" \
     "$(audit_json_or_null "$local_user")" \
     "$(audit_json_or_null "$effective_user")"
+}
+
+audit_should_prefer_local_actor_over_ssh() {
+  local ssh_name="$1"
+  local ssh_user="$2"
+  local local_actor_source="$3"
+  local local_actor_name="$4"
+
+  if ! audit_is_meaningful_host_user "$local_actor_name"; then
+    return 1
+  fi
+
+  if [[ "$local_actor_source" == 'SUDO_USER' ]]; then
+    return 0
+  fi
+
+  if audit_is_low_signal_ssh_name "$ssh_name"; then
+    return 0
+  fi
+
+  if [[ -z "$ssh_name" ]] && [[ -z "$ssh_user" || "$ssh_user" == 'dokku' ]]; then
+    return 0
+  fi
+
+  return 1
+}
+
+audit_merge_actor_identity_meta_json() {
+  local preferred_actor_source="$1"
+  local ssh_meta_json="${2:-}"
+  local local_meta_json="${3:-}"
+  local merged_json
+
+  merged_json="$(audit_json_patch_objects "$(audit_json_remove_key "$ssh_meta_json" '$.actor_source')" "$(audit_json_remove_key "$local_meta_json" '$.actor_source')")"
+  audit_json_patch_objects "$merged_json" "{\"actor_source\":$(audit_json_or_null "$preferred_actor_source") }"
 }
 
 audit_actor_label_sql_expr() {
