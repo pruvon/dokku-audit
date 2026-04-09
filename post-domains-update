@@ -11,17 +11,25 @@ audit_handle_post_domains_update() {
   local app="$1"
   local action="$2"
   shift 2 || true
+  local ts
   local domains=("$@")
   local message
+  local actor_type="system"
+  local actor_name=""
   local meta_json
 
   [[ -n "$app" ]] || audit_die "missing app name"
   [[ -n "$action" ]] || audit_die "missing domains action"
 
+  ts="$(audit_now_utc)"
   message="$(audit_message_for_domains_change "$action" "${domains[@]}")"
   meta_json="{\"domains\":$(audit_json_array_from_args "${domains[@]}") }"
+  audit_claim_pending_event_actor_context "$app" "domains" "$ts"
+  actor_type="$AUDIT_CONTEXT_ACTOR_TYPE"
+  actor_name="$AUDIT_CONTEXT_ACTOR_NAME"
+  meta_json="$(audit_json_patch_objects "$meta_json" "$AUDIT_CONTEXT_ACTOR_META_JSON")"
 
-  audit_insert_event "$app" "domains" "$action" "success" "domains_change" "post-domains-update" "" "" "" "system" "" "" "$message" "$meta_json"
+  audit_insert_event "$app" "domains" "$action" "success" "domains_change" "post-domains-update" "" "" "" "$actor_type" "$actor_name" "" "$message" "$meta_json" "$ts" "$ts"
 }
 
 audit_trigger_guard "post-domains-update" "${1:-}" audit_handle_post_domains_update "$@"

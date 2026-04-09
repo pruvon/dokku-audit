@@ -49,7 +49,8 @@ import json
 import sys
 
 payload = json.loads(sys.argv[1])
-meta = json.dumps(payload.get("meta", {}), indent=2, sort_keys=True)
+meta_payload = payload.get("meta", {})
+meta = json.dumps(meta_payload, indent=2, sort_keys=True)
 mapping = [
     ("id", payload.get("id")),
     ("ts", payload.get("ts")),
@@ -64,6 +65,11 @@ mapping = [
     ("rev", payload.get("rev") or "-"),
     ("actor type", payload.get("actor_type")),
     ("actor name", payload.get("actor_name") or "-"),
+    ("actor source", meta_payload.get("actor_source") or "-"),
+    ("ssh user", meta_payload.get("ssh_user") or "-"),
+    ("ssh name", meta_payload.get("ssh_name") or "-"),
+    ("ssh key fingerprint", meta_payload.get("ssh_key_fingerprint") or "-"),
+    ("triggered by", meta_payload.get("triggered_by_command") or "-"),
     ("correlation id", payload.get("correlation_id") or "-"),
     ("message", payload.get("message") or "-"),
     ("created at", payload.get("created_at")),

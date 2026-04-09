@@ -11,9 +11,11 @@ audit_handle_user_auth() {
   local ssh_user="${1:-}"
   local ssh_name="${2:-}"
   local ts
+  local ssh_key_fingerprint
   local actor_name
   local actor_source
   local actor_type
+  local actor_meta_json
   local hostname
   local subcommand
   local app
@@ -24,6 +26,7 @@ audit_handle_user_auth() {
   local command_text
   local meta_json
   local message
+  local event_kind
   local -a command_tokens=()
   local -a sanitized_tokens=()
   local token
@@ -44,7 +47,9 @@ audit_handle_user_auth() {
   ts="$(audit_now_utc)"
   actor_name="$(audit_actor_name_from_ssh_context "$ssh_name" "$ssh_user")"
   actor_source="$(audit_actor_source_from_ssh_context "$ssh_name" "$ssh_user")"
+  ssh_key_fingerprint="$(audit_resolve_ssh_key_fingerprint "$ssh_name")"
   actor_type="$(audit_actor_type_from_name "$actor_name")"
+  actor_meta_json="$(audit_actor_identity_meta_json "$actor_source" "$ssh_user" "$ssh_name" "$ssh_key_fingerprint")"
   hostname="$(audit_hostname)"
 
   audit_parse_dokku_invocation "${command_tokens[@]}"
@@ -72,12 +77,17 @@ audit_handle_user_auth() {
   match_args_json="$(audit_json_array_from_args "${parsed_match_args[@]}")"
   command_text="$(audit_prefixed_dokku_command_text "${sanitized_tokens[@]}")"
   message="$(audit_message_for_command_invoke "$command_text" "$subcommand")"
-  meta_json="$(audit_command_event_meta_json "$actor_source" "$command_text" "$subcommand" "$general_args_json" "$container_type" "$container_id" "$hostname" "authorized")"
+  meta_json="$(audit_json_patch_objects "$(audit_command_event_meta_json "$actor_source" "$command_text" "$subcommand" "$general_args_json" "$container_type" "$container_id" "$hostname" "authorized")" "$(audit_json_remove_key "$actor_meta_json" '$.actor_source')")"
+
+  while IFS= read -r event_kind; do
+    [[ -n "$event_kind" ]] || continue
+    audit_store_pending_event_actor_context "$app" "$event_kind" "$subcommand" "$command_text" "$actor_type" "$actor_name" "$actor_meta_json" "$ts"
+  done < <(audit_follow_on_event_kinds_lines "$subcommand" "$app")
 
   case "$subcommand" in
     run|enter)
       [[ -n "$app" ]] || return 0
-      audit_store_pending_command_context "$app" "$subcommand" "$command_text" "$match_args_json" "$actor_type" "$actor_name" "$actor_source" "$hostname" "$ts"
+      audit_store_pending_command_context "$app" "$subcommand" "$command_text" "$match_args_json" "$actor_type" "$actor_name" "$actor_source" "$actor_meta_json" "$hostname" "$ts"
       return 0
       ;;
   esac

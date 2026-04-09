@@ -17,6 +17,7 @@ audit_handle_scheduler_enter() {
   local actor_type="system"
   local actor_name=""
   local actor_source=""
+  local actor_meta_json='{}'
   local command_text=""
   local hostname=""
   local meta_json
@@ -29,7 +30,7 @@ audit_handle_scheduler_enter() {
   match_args_json="$(audit_json_array_from_args "$@")"
   claim="$(audit_claim_pending_command_context "$app" "enter" "$match_args_json" "$ts")"
   if [[ -n "$claim" ]]; then
-    IFS=$'\t' read -r _ actor_type actor_name actor_source command_text hostname _ <<< "$claim"
+    IFS=$'\t' read -r _ actor_type actor_name actor_source actor_meta_json command_text hostname _ <<< "$claim"
   fi
 
   audit_parse_enter_arguments "$app" "$@"
@@ -42,7 +43,7 @@ audit_handle_scheduler_enter() {
     hostname="$(audit_hostname)"
   fi
 
-  meta_json="$(audit_command_event_meta_json "$actor_source" "$command_text" "enter" "$args_json" "$AUDIT_PARSED_CONTAINER_TYPE" "$AUDIT_PARSED_CONTAINER_ID" "$hostname" "enter_requested")"
+  meta_json="$(audit_json_patch_objects "$(audit_command_event_meta_json "$actor_source" "$command_text" "enter" "$args_json" "$AUDIT_PARSED_CONTAINER_TYPE" "$AUDIT_PARSED_CONTAINER_ID" "$hostname" "enter_requested")" "$(audit_json_remove_key "$actor_meta_json" '$.actor_source')")"
   audit_insert_event "$app" "command" "enter" "success" "dokku_enter" "scheduler-enter" "" "" "" "$actor_type" "$actor_name" "" "$(audit_message_for_enter)" "$meta_json" "$ts" "$ts"
 }
 

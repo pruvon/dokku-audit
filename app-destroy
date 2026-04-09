@@ -9,9 +9,20 @@ source "$AUDIT_SCRIPT_DIR/bootstrap"
 
 audit_handle_app_destroy() {
   local app="$1"
+  local ts
+  local actor_type="system"
+  local actor_name=""
+  local meta_json='{}'
 
   [[ -n "$app" ]] || audit_die "missing app name"
-  audit_insert_event "$app" "app" "destroy" "success" "app_destroy" "app-destroy" "" "" "" "system" "" "" "app destroyed" '{}'
+
+  ts="$(audit_now_utc)"
+  audit_claim_pending_event_actor_context "$app" "app-destroy" "$ts"
+  actor_type="$AUDIT_CONTEXT_ACTOR_TYPE"
+  actor_name="$AUDIT_CONTEXT_ACTOR_NAME"
+  meta_json="$(audit_json_patch_objects "$meta_json" "$AUDIT_CONTEXT_ACTOR_META_JSON")"
+
+  audit_insert_event "$app" "app" "destroy" "success" "app_destroy" "app-destroy" "" "" "" "$actor_type" "$actor_name" "" "app destroyed" "$meta_json" "$ts" "$ts"
 }
 
 audit_trigger_guard "app-destroy" "${1:-}" audit_handle_app_destroy "$@"

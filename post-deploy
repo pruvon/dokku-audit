@@ -13,11 +13,16 @@ audit_handle_post_deploy() {
   local internal_ip_address="${3:-}"
   local image_tag="${4:-}"
   local ts
+  local actor_type="system"
+  local actor_name=""
   local app_sql
 
   [[ -n "$app" ]] || audit_die "missing app name"
 
   ts="$(audit_now_utc)"
+  audit_claim_pending_event_actor_context "$app" "deploy-finish" "$ts"
+  actor_type="$AUDIT_CONTEXT_ACTOR_TYPE"
+  actor_name="$AUDIT_CONTEXT_ACTOR_NAME"
   app_sql="$(audit_sql_quote "$app")"
 
   audit_db_exec "BEGIN IMMEDIATE;
@@ -49,24 +54,27 @@ INSERT INTO events (
   (SELECT source_type FROM pending_deploys WHERE app = $app_sql LIMIT 1),
   $(audit_sql_nullable "$image_tag"),
   (SELECT rev FROM pending_deploys WHERE app = $app_sql LIMIT 1),
-  'system',
-  NULL,
+  $(audit_sql_quote "$actor_type"),
+  $(audit_sql_nullable "$actor_name"),
   (SELECT correlation_id FROM pending_deploys WHERE app = $app_sql LIMIT 1),
   CASE WHEN EXISTS(SELECT 1 FROM pending_deploys WHERE app = $app_sql) THEN 'source deploy finished' ELSE 'release-only deploy finished' END,
   json_patch(
-    json_object(
-      'internal_port', $(audit_sql_nullable "$internal_port"),
-      'internal_ip_address', $(audit_sql_nullable "$internal_ip_address"),
-      'image_tag', $(audit_sql_nullable "$image_tag"),
-      'source_type', (SELECT source_type FROM pending_deploys WHERE app = $app_sql LIMIT 1),
-      'rev', (SELECT rev FROM pending_deploys WHERE app = $app_sql LIMIT 1)
+    json_patch(
+      json_object(
+        'internal_port', $(audit_sql_nullable "$internal_port"),
+        'internal_ip_address', $(audit_sql_nullable "$internal_ip_address"),
+        'image_tag', $(audit_sql_nullable "$image_tag"),
+        'source_type', (SELECT source_type FROM pending_deploys WHERE app = $app_sql LIMIT 1),
+        'rev', (SELECT rev FROM pending_deploys WHERE app = $app_sql LIMIT 1)
+      ),
+      CASE
+        WHEN EXISTS(SELECT 1 FROM pending_deploys WHERE app = $app_sql)
+          AND COALESCE((SELECT metadata_json FROM pending_deploys WHERE app = $app_sql LIMIT 1), '{}') != '{}'
+        THEN json_object('pending_metadata', json(COALESCE((SELECT metadata_json FROM pending_deploys WHERE app = $app_sql LIMIT 1), '{}')))
+        ELSE '{}'
+      END
     ),
-    CASE
-      WHEN EXISTS(SELECT 1 FROM pending_deploys WHERE app = $app_sql)
-        AND COALESCE((SELECT metadata_json FROM pending_deploys WHERE app = $app_sql LIMIT 1), '{}') != '{}'
-      THEN json_object('pending_metadata', json(COALESCE((SELECT metadata_json FROM pending_deploys WHERE app = $app_sql LIMIT 1), '{}')))
-      ELSE '{}'
-    END
+    json($(audit_sql_quote "$AUDIT_CONTEXT_ACTOR_META_JSON"))
   ),
   $(audit_sql_quote "$ts")
 );

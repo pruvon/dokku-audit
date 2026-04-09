@@ -11,8 +11,11 @@ audit_handle_post_config_update() {
   local app="$1"
   local action="$2"
   shift 2 || true
+  local ts
   local keys=()
   local message
+  local actor_type="system"
+  local actor_name=""
   local meta_json
   local key
 
@@ -24,10 +27,15 @@ audit_handle_post_config_update() {
     keys+=("$key")
   done < <(audit_extract_config_keys "$@")
 
+  ts="$(audit_now_utc)"
   message="$(audit_message_for_config_change "$action" "${keys[@]}")"
   meta_json="{\"keys\":$(audit_json_array_from_args "${keys[@]}"),\"value_redacted\":true}"
+  audit_claim_pending_event_actor_context "$app" "config" "$ts"
+  actor_type="$AUDIT_CONTEXT_ACTOR_TYPE"
+  actor_name="$AUDIT_CONTEXT_ACTOR_NAME"
+  meta_json="$(audit_json_patch_objects "$meta_json" "$AUDIT_CONTEXT_ACTOR_META_JSON")"
 
-  audit_insert_event "$app" "config" "$action" "success" "config_change" "post-config-update" "" "" "" "system" "" "" "$message" "$meta_json"
+  audit_insert_event "$app" "config" "$action" "success" "config_change" "post-config-update" "" "" "" "$actor_type" "$actor_name" "" "$message" "$meta_json" "$ts" "$ts"
 }
 
 audit_trigger_guard "post-config-update" "${1:-}" audit_handle_post_config_update "$@"

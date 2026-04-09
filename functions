@@ -244,6 +244,38 @@ audit_json_array_from_args() {
   printf ']'
 }
 
+audit_json_patch_objects() {
+  local base_json="${1:-}"
+  local patch_json="${2:-}"
+
+  if [[ -z "$base_json" ]]; then
+    base_json='{}'
+  fi
+
+  if [[ -z "$patch_json" ]] || [[ "$patch_json" == '{}' ]]; then
+    printf '%s\n' "$base_json"
+    return 0
+  fi
+
+  audit_db_query_single ':memory:' "SELECT json_patch(json($(audit_sql_quote "$base_json")), json($(audit_sql_quote "$patch_json")));"
+}
+
+audit_json_remove_key() {
+  local input_json="${1:-}"
+  local key_path="$2"
+
+  if [[ -z "$input_json" ]]; then
+    input_json='{}'
+  fi
+
+  if [[ -z "$key_path" ]] || [[ "$input_json" == '{}' ]]; then
+    printf '%s\n' "$input_json"
+    return 0
+  fi
+
+  audit_db_query_single ':memory:' "SELECT json_remove(json($(audit_sql_quote "$input_json")), $(audit_sql_quote "$key_path"));"
+}
+
 audit_hostname() {
   if [[ -n "${DOKKU_AUDIT_HOSTNAME:-}" ]]; then
     printf '%s\n' "$DOKKU_AUDIT_HOSTNAME"
@@ -306,6 +338,41 @@ audit_actor_source_from_ssh_context() {
   fi
 
   printf '\n'
+}
+
+audit_resolve_ssh_key_fingerprint() {
+  local ssh_name="${1:-}"
+  local line
+  local fingerprint=""
+  local match_count=0
+
+  [[ -n "$ssh_name" ]] || return 0
+  audit_has_command sshcommand || return 0
+
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    match_count=$((match_count + 1))
+    if [[ "$match_count" -eq 1 ]]; then
+      fingerprint="${line%% *}"
+    fi
+  done < <(SSHCOMMAND_IGNORE_LIST_WARNINGS=true sshcommand list "$(audit_runtime_user)" "$ssh_name" 2>/dev/null || true)
+
+  if [[ "$match_count" -eq 1 ]] && [[ -n "$fingerprint" ]]; then
+    printf '%s\n' "$fingerprint"
+  fi
+}
+
+audit_actor_identity_meta_json() {
+  local actor_source="$1"
+  local ssh_user="$2"
+  local ssh_name="$3"
+  local ssh_key_fingerprint="$4"
+
+  printf '{"actor_source":%s,"ssh_user":%s,"ssh_name":%s,"ssh_key_fingerprint":%s}' \
+    "$(audit_json_or_null "$actor_source")" \
+    "$(audit_json_or_null "$ssh_user")" \
+    "$(audit_json_or_null "$ssh_name")" \
+    "$(audit_json_or_null "$ssh_key_fingerprint")"
 }
 
 audit_actor_type_from_name() {
@@ -452,10 +519,13 @@ audit_command_uses_first_positional_app() {
   local subcommand="${1:-}"
 
   case "$subcommand" in
+    apps:create|apps:destroy|deploy)
+      return 0
+      ;;
     config:set-global|config:unset-global)
       return 1
       ;;
-    config|config:*|resource:*|domains|domains:*|ports:*|proxy:*|ps:*|logs|checks:*|nginx:*|docker-options:*|storage:*|network:*|git:*|builder:*|certs:*|letsencrypt:*)
+    config|config:*|resource:*|domains|domains:*|ports:*|proxy:*|ps:*|logs|checks:*|nginx:*|docker-options:*|storage:*|network:*|git:*|builder:*|certs:*|letsencrypt:*|tags:*)
       return 0
       ;;
   esac
@@ -650,6 +720,41 @@ audit_should_record_user_auth_command() {
   esac
 
   return 0
+}
+
+audit_follow_on_event_kinds_lines() {
+  local subcommand="${1:-}"
+  local app="${2:-}"
+
+  [[ -n "$app" ]] || return 0
+
+  case "$subcommand" in
+    apps:create)
+      printf 'app-create\n'
+      ;;
+    apps:destroy)
+      printf 'app-destroy\n'
+      ;;
+    config:set|config:unset|config:clear)
+      printf 'config\n'
+      printf 'deploy-finish\n'
+      ;;
+    domains:*)
+      printf 'domains\n'
+      ;;
+    ports:*|proxy:ports*)
+      printf 'ports\n'
+      ;;
+    ps:restart)
+      printf 'deploy-finish\n'
+      ;;
+    deploy|git:sync|git:from-archive|git:from-directory|git:from-image|git:load-image|ps:rebuild|tags:deploy)
+      printf 'deploy-receive\n'
+      printf 'deploy-source-set\n'
+      printf 'deploy-extract\n'
+      printf 'deploy-finish\n'
+      ;;
+  esac
 }
 
 audit_command_event_meta_json() {
@@ -1112,6 +1217,104 @@ audit_insert_maintenance_event() {
   audit_insert_event "" "maintenance" "$action" "success" "$classification" "manual" "" "" "" "system" "" "" "$message" "$meta_json"
 }
 
+AUDIT_CONTEXT_ACTOR_TYPE="system"
+AUDIT_CONTEXT_ACTOR_NAME=""
+AUDIT_CONTEXT_ACTOR_META_JSON='{}'
+
+audit_delete_stale_pending_event_actor_contexts() {
+  local ts="${1:-$(audit_now_utc)}"
+
+  audit_db_exec "DELETE FROM pending_event_actor_contexts WHERE updated_at < strftime('%Y-%m-%dT%H:%M:%SZ', $(audit_sql_quote "$ts"), '-$(audit_pending_stale_threshold_seconds) seconds');"
+}
+
+audit_store_pending_event_actor_context() {
+  local app="$1"
+  local event_kind="$2"
+  local source_subcommand="$3"
+  local command_text="$4"
+  local actor_type="$5"
+  local actor_name="$6"
+  local actor_meta_json="$7"
+  local ts="${8:-$(audit_now_utc)}"
+
+  [[ -n "$app" ]] || return 0
+  [[ -n "$event_kind" ]] || return 0
+
+  if [[ -z "$actor_meta_json" ]]; then
+    actor_meta_json='{}'
+  fi
+
+  audit_delete_stale_pending_event_actor_contexts "$ts"
+  audit_db_exec "INSERT INTO pending_event_actor_contexts(
+    app,
+    event_kind,
+    source_subcommand,
+    command_text,
+    actor_type,
+    actor_name,
+    actor_meta_json,
+    created_at,
+    updated_at
+  ) VALUES (
+    $(audit_sql_quote "$app"),
+    $(audit_sql_quote "$event_kind"),
+    $(audit_sql_quote "$source_subcommand"),
+    $(audit_sql_quote "$command_text"),
+    $(audit_sql_quote "$actor_type"),
+    $(audit_sql_nullable "$actor_name"),
+    $(audit_sql_quote "$actor_meta_json"),
+    $(audit_sql_quote "$ts"),
+    $(audit_sql_quote "$ts")
+  ) ON CONFLICT(app, event_kind) DO UPDATE SET
+    source_subcommand = excluded.source_subcommand,
+    command_text = excluded.command_text,
+    actor_type = excluded.actor_type,
+    actor_name = excluded.actor_name,
+    actor_meta_json = excluded.actor_meta_json,
+    updated_at = excluded.updated_at;"
+}
+
+audit_claim_pending_event_actor_context() {
+  local app="$1"
+  local event_kind="$2"
+  local ts="${3:-$(audit_now_utc)}"
+  local claim
+  local command_text=""
+  local source_subcommand=""
+
+  AUDIT_CONTEXT_ACTOR_TYPE="system"
+  AUDIT_CONTEXT_ACTOR_NAME=""
+  AUDIT_CONTEXT_ACTOR_META_JSON='{}'
+
+  [[ -n "$app" ]] || return 0
+  [[ -n "$event_kind" ]] || return 0
+
+  claim="$(sqlite3 -tabs "$(audit_db_path)" <<SQL
+.timeout $(audit_busy_timeout_ms)
+PRAGMA foreign_keys = ON;
+BEGIN IMMEDIATE;
+DELETE FROM pending_event_actor_contexts
+WHERE updated_at < strftime('%Y-%m-%dT%H:%M:%SZ', $(audit_sql_quote "$ts"), '-$(audit_pending_stale_threshold_seconds) seconds');
+SELECT actor_type, COALESCE(actor_name, ''), COALESCE(actor_meta_json, '{}'), command_text, source_subcommand
+FROM pending_event_actor_contexts
+WHERE app = $(audit_sql_quote "$app")
+  AND event_kind = $(audit_sql_quote "$event_kind")
+  AND updated_at >= strftime('%Y-%m-%dT%H:%M:%SZ', $(audit_sql_quote "$ts"), '-$(audit_command_match_window_seconds) seconds')
+LIMIT 1;
+DELETE FROM pending_event_actor_contexts
+WHERE app = $(audit_sql_quote "$app")
+  AND event_kind = $(audit_sql_quote "$event_kind")
+  AND updated_at >= strftime('%Y-%m-%dT%H:%M:%SZ', $(audit_sql_quote "$ts"), '-$(audit_command_match_window_seconds) seconds');
+COMMIT;
+SQL
+)"
+
+  [[ -n "$claim" ]] || return 0
+
+  IFS=$'\t' read -r AUDIT_CONTEXT_ACTOR_TYPE AUDIT_CONTEXT_ACTOR_NAME AUDIT_CONTEXT_ACTOR_META_JSON command_text source_subcommand <<< "$claim"
+  AUDIT_CONTEXT_ACTOR_META_JSON="$(audit_json_patch_objects "$AUDIT_CONTEXT_ACTOR_META_JSON" "{\"triggered_by_command\":$(audit_json_or_null "$command_text"),\"triggered_by_subcommand\":$(audit_json_or_null "$source_subcommand")}")"
+}
+
 audit_delete_stale_pending_command_contexts() {
   local ts="${1:-$(audit_now_utc)}"
 
@@ -1132,11 +1335,16 @@ audit_store_pending_command_context() {
   local actor_type="$5"
   local actor_name="$6"
   local actor_source="$7"
-  local hostname="$8"
-  local ts="${9:-$(audit_now_utc)}"
+  local actor_meta_json="$8"
+  local hostname="$9"
+  local ts="${10:-$(audit_now_utc)}"
 
   if [[ -z "$args_json" ]]; then
     args_json='[]'
+  fi
+
+  if [[ -z "$actor_meta_json" ]]; then
+    actor_meta_json='{}'
   fi
 
   audit_delete_stale_pending_command_contexts "$ts"
@@ -1148,6 +1356,7 @@ audit_store_pending_command_context() {
     actor_type,
     actor_name,
     actor_source,
+    actor_meta_json,
     hostname,
     created_at
   ) VALUES (
@@ -1158,6 +1367,7 @@ audit_store_pending_command_context() {
     $(audit_sql_quote "$actor_type"),
     $(audit_sql_nullable "$actor_name"),
     $(audit_sql_nullable "$actor_source"),
+    $(audit_sql_quote "$actor_meta_json"),
     $(audit_sql_nullable "$hostname"),
     $(audit_sql_quote "$ts")
   );"
@@ -1179,7 +1389,7 @@ PRAGMA foreign_keys = ON;
 BEGIN IMMEDIATE;
 DELETE FROM pending_command_contexts
 WHERE created_at < strftime('%Y-%m-%dT%H:%M:%SZ', $(audit_sql_quote "$ts"), '-$(audit_pending_stale_threshold_seconds) seconds');
-SELECT id, actor_type, COALESCE(actor_name, ''), COALESCE(actor_source, ''), command_text, COALESCE(hostname, ''), created_at
+SELECT id, actor_type, COALESCE(actor_name, ''), COALESCE(actor_source, ''), COALESCE(actor_meta_json, '{}'), command_text, COALESCE(hostname, ''), created_at
 FROM pending_command_contexts
 WHERE subcommand = $(audit_sql_quote "$subcommand")
   AND COALESCE(app, '') = $(audit_sql_quote "$app")

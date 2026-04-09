@@ -1,7 +1,7 @@
 plugin version: 0.1.0
 database path: __DB_PATH__
 application id: 1145132356
-schema version: 3
+schema version: 4
 journal mode: wal
 total events: 1
 pending deploy count: 0

@@ -16,6 +16,7 @@ audit_handle_scheduler_run() {
   local actor_type="system"
   local actor_name=""
   local actor_source=""
+  local actor_meta_json='{}'
   local command_text=""
   local hostname=""
   local event_id
@@ -29,7 +30,7 @@ audit_handle_scheduler_run() {
   args_json="$(audit_json_array_from_args "$@")"
   claim="$(audit_claim_pending_command_context "$app" "run" "$args_json" "$ts")"
   if [[ -n "$claim" ]]; then
-    IFS=$'\t' read -r _ actor_type actor_name actor_source command_text hostname _ <<< "$claim"
+    IFS=$'\t' read -r _ actor_type actor_name actor_source actor_meta_json command_text hostname _ <<< "$claim"
   fi
 
   if [[ -z "$command_text" ]]; then
@@ -39,7 +40,7 @@ audit_handle_scheduler_run() {
     hostname="$(audit_hostname)"
   fi
 
-  meta_json="$(audit_command_event_meta_json "$actor_source" "$command_text" "run" "$args_json" "" "" "$hostname" "scheduled")"
+  meta_json="$(audit_json_patch_objects "$(audit_command_event_meta_json "$actor_source" "$command_text" "run" "$args_json" "" "" "$hostname" "scheduled")" "$(audit_json_remove_key "$actor_meta_json" '$.actor_source')")"
   event_id="$(audit_insert_event_with_id "$app" "command" "run" "success" "dokku_run" "scheduler-run" "" "" "" "$actor_type" "$actor_name" "" "$(audit_message_for_run)" "$meta_json" "$ts" "$ts")"
   audit_store_pending_runtime_event "$event_id" "$app" "run" "$args_json" "$ts"
 }

@@ -12,10 +12,18 @@ audit_handle_post_extract() {
   local tmp_work_dir="${2:-}"
   local rev="${3:-}"
   local ts
+  local actor_type="system"
+  local actor_name=""
+  local meta_json
 
   [[ -n "$app" ]] || audit_die "missing app name"
 
   ts="$(audit_now_utc)"
+  meta_json="{\"rev\":$(audit_json_or_null "$rev") }"
+  audit_claim_pending_event_actor_context "$app" "deploy-extract" "$ts"
+  actor_type="$AUDIT_CONTEXT_ACTOR_TYPE"
+  actor_name="$AUDIT_CONTEXT_ACTOR_NAME"
+  meta_json="$(audit_json_patch_objects "$meta_json" "$AUDIT_CONTEXT_ACTOR_META_JSON")"
   audit_db_exec "BEGIN IMMEDIATE;
 UPDATE pending_deploys
 SET
@@ -50,11 +58,11 @@ INSERT INTO events (
   (SELECT source_type FROM pending_deploys WHERE app = $(audit_sql_quote "$app") LIMIT 1),
   NULL,
   $(audit_sql_nullable "$rev"),
-  'system',
-  NULL,
+  $(audit_sql_quote "$actor_type"),
+  $(audit_sql_nullable "$actor_name"),
   (SELECT correlation_id FROM pending_deploys WHERE app = $(audit_sql_quote "$app") LIMIT 1),
   'source extracted',
-  json_object('rev', $(audit_sql_nullable "$rev")),
+  $(audit_sql_quote "$meta_json"),
   $(audit_sql_quote "$ts")
 );
 COMMIT;"

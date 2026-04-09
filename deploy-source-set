@@ -13,8 +13,11 @@ audit_handle_deploy_source_set() {
   shift 2 || true
   local metadata_raw="$*"
   local ts
+  local actor_type="system"
+  local actor_name=""
   local correlation_id
   local metadata_json='{}'
+  local meta_json
 
   [[ -n "$app" ]] || audit_die "missing app name"
   [[ -n "$source_type" ]] || audit_die "missing source type"
@@ -27,6 +30,11 @@ audit_handle_deploy_source_set() {
   if [[ -n "$metadata_raw" ]]; then
     metadata_json="{\"deploy_metadata_raw\":$(audit_json_string "$metadata_raw") }"
   fi
+  meta_json="{\"source_type\":$(audit_json_string "$source_type"),\"deploy_metadata_raw\":$(audit_json_or_null "$metadata_raw") }"
+  audit_claim_pending_event_actor_context "$app" "deploy-source-set" "$ts"
+  actor_type="$AUDIT_CONTEXT_ACTOR_TYPE"
+  actor_name="$AUDIT_CONTEXT_ACTOR_NAME"
+  meta_json="$(audit_json_patch_objects "$meta_json" "$AUDIT_CONTEXT_ACTOR_META_JSON")"
 
   audit_db_exec "BEGIN IMMEDIATE;
 INSERT INTO pending_deploys(
@@ -79,11 +87,11 @@ INSERT INTO events (
   $(audit_sql_quote "$source_type"),
   NULL,
   NULL,
-  'system',
-  NULL,
+  $(audit_sql_quote "$actor_type"),
+  $(audit_sql_nullable "$actor_name"),
   $(audit_sql_quote "$correlation_id"),
   'deploy source metadata recorded',
-  json_object('source_type', $(audit_sql_quote "$source_type"), 'deploy_metadata_raw', $(audit_sql_nullable "$metadata_raw")),
+  $(audit_sql_quote "$meta_json"),
   $(audit_sql_quote "$ts")
 );
 COMMIT;"
