@@ -16,6 +16,11 @@ run_cmd "$REPO_ROOT/subcommands/doctor"
 assert_status 0
 assert_contains "$RUN_OUTPUT" 'ok: integrity_check returned ok'
 
+run_cmd "$REPO_ROOT/subcommands/vacuum"
+assert_status 0
+assert_eq 'vacuum completed' "$RUN_OUTPUT"
+assert_eq '1' "$(db_query_single "SELECT COUNT(1) FROM events WHERE category = 'maintenance' AND action = 'vacuum';")"
+
 run_cmd "$REPO_ROOT/report"
 assert_status 0
 assert_contains "$RUN_OUTPUT" 'audit plugin enabled: true'
@@ -24,6 +29,9 @@ assert_contains "$RUN_OUTPUT" 'audit pending deploys: 0'
 
 setup_test_env prune_command
 seed_source_deploy_flow
+run_cmd "$REPO_ROOT/subcommands/prune" audit:prune --older-than 0 --category app
+assert_status 1
+assert_contains "$RUN_OUTPUT" 'refusing to prune without --yes'
 run_cmd "$REPO_ROOT/subcommands/prune" audit:prune --older-than 0 --category app --yes
 assert_status 0
 assert_eq 'deleted events: 1' "$RUN_OUTPUT"
@@ -37,6 +45,25 @@ sqlite3 "$(db_path)" "INSERT INTO pending_deploys(app, correlation_id, source_ty
 run_cmd "$REPO_ROOT/subcommands/doctor"
 assert_status 1
 assert_contains "$RUN_OUTPUT" 'issue: stale pending deploy rows detected: 1'
+
+setup_test_env doctor_stale_contexts
+run_at '2026-04-08T20:00:00Z' "$REPO_ROOT/subcommands/migrate" audit:migrate
+assert_status 0
+sqlite3 "$(db_path)" <<'SQL'
+INSERT INTO pending_command_contexts(app, subcommand, command_text, args_json, actor_type, actor_name, actor_source, hostname, created_at, actor_meta_json)
+VALUES('myapp', 'run', 'dokku run myapp env', '["env"]', 'user', 'alice', 'SSH_NAME', 'host-a', '2026-04-06T20:00:00Z', '{}');
+INSERT INTO events(ts, app, category, action, status, classification, source_trigger, source_type, image_tag, rev, actor_type, actor_name, correlation_id, message, meta_json, created_at)
+VALUES('2026-04-08T20:00:01Z', 'myapp', 'command', 'run', 'success', 'dokku_run', 'scheduler-run', NULL, NULL, NULL, 'user', 'alice', NULL, 'dokku run scheduled', '{}', '2026-04-08T20:00:01Z');
+INSERT INTO pending_runtime_events(event_id, app, subcommand, args_json, created_at, updated_at)
+VALUES(1, 'myapp', 'run', '["env"]', '2026-04-06T20:00:00Z', '2026-04-06T20:00:00Z');
+INSERT INTO pending_event_actor_contexts(app, event_kind, source_subcommand, command_text, actor_type, actor_name, actor_meta_json, created_at, updated_at)
+VALUES('myapp', 'config', 'config:set', 'dokku config:set myapp FOO=[REDACTED]', 'user', 'alice', '{}', '2026-04-06T20:00:00Z', '2026-04-06T20:00:00Z');
+SQL
+run_cmd "$REPO_ROOT/subcommands/doctor"
+assert_status 1
+assert_contains "$RUN_OUTPUT" 'issue: stale pending command context rows detected: 1'
+assert_contains "$RUN_OUTPUT" 'issue: stale pending runtime event rows detected: 1'
+assert_contains "$RUN_OUTPUT" 'issue: stale pending event actor context rows detected: 1'
 
 setup_test_env doctor_app_id
 run_at '2026-04-08T20:00:00Z' "$REPO_ROOT/subcommands/migrate" audit:migrate

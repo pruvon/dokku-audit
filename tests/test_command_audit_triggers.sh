@@ -130,3 +130,31 @@ assert_contains "$RUN_OUTPUT" 'ACTOR'
 assert_contains "$RUN_OUTPUT" 'myapp'
 assert_contains "$RUN_OUTPUT" 'ssh-key:alice'
 assert_contains "$RUN_OUTPUT" 'dokku resource:limit myapp --memory 512m --cpu 2'
+
+setup_test_env command_follow_on_domains_ports
+run_at '2026-04-08T20:00:00Z' "$REPO_ROOT/subcommands/migrate"
+assert_status 0
+
+run_cmd env DOKKU_AUDIT_NOW='2026-04-08T20:05:00Z' SSH_USER=dokku SSH_NAME=alice "$REPO_ROOT/user-auth" dokku alice domains:add myapp example.com www.example.com
+assert_status 0
+run_at '2026-04-08T20:05:01Z' "$REPO_ROOT/post-domains-update" myapp add example.com www.example.com
+assert_status 0
+assert_eq 'alice' "$(db_query_single "SELECT actor_name FROM events WHERE classification = 'domains_change' LIMIT 1;")"
+assert_eq 'domains:add' "$(db_query_single "SELECT json_extract(meta_json, '$.triggered_by_subcommand') FROM events WHERE classification = 'domains_change' LIMIT 1;")"
+assert_eq 'example.com' "$(db_query_single "SELECT json_extract(meta_json, '$.domains[0]') FROM events WHERE classification = 'domains_change' LIMIT 1;")"
+assert_eq 'www.example.com' "$(db_query_single "SELECT json_extract(meta_json, '$.domains[1]') FROM events WHERE classification = 'domains_change' LIMIT 1;")"
+
+run_cmd env DOKKU_AUDIT_NOW='2026-04-08T20:06:00Z' SSH_USER=dokku SSH_NAME=alice "$REPO_ROOT/user-auth" dokku alice ports:add myapp http:80:5000 https:443:5000
+assert_status 0
+run_at '2026-04-08T20:06:01Z' "$REPO_ROOT/post-proxy-ports-update" myapp add http:80:5000 https:443:5000
+assert_status 0
+assert_eq 'alice' "$(db_query_single "SELECT actor_name FROM events WHERE classification = 'ports_change' LIMIT 1;")"
+assert_eq 'ports:add' "$(db_query_single "SELECT json_extract(meta_json, '$.triggered_by_subcommand') FROM events WHERE classification = 'ports_change' LIMIT 1;")"
+assert_eq '2' "$(db_query_single "SELECT json_extract(meta_json, '$.port_mapping_count') FROM events WHERE classification = 'ports_change' LIMIT 1;")"
+assert_eq '1' "$(db_query_single "SELECT json_extract(meta_json, '$.details_redacted') FROM events WHERE classification = 'ports_change' LIMIT 1;")"
+
+setup_test_env trigger_guard_strict_mode
+run_cmd env DOKKU_AUDIT_STRICT_MODE=true PLUGIN_AVAILABLE_PATH="$REPO_ROOT" bash -lc 'source "$PLUGIN_AVAILABLE_PATH/bootstrap"; failing_handler(){ audit_die "boom"; }; audit_trigger_guard "test-trigger" "myapp" failing_handler'
+assert_status 1
+assert_contains "$RUN_OUTPUT" 'dokku-audit: error: boom'
+assert_contains "$RUN_OUTPUT" "dokku-audit: warning: failed to record test-trigger for app 'myapp'"

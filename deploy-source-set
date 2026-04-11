@@ -24,9 +24,7 @@ audit_handle_deploy_source_set() {
   ts="$(audit_now_utc)"
   audit_claim_pending_event_actor_context "$app" "deploy-source-set" "$ts"
   correlation_id="$(audit_pending_correlation_id "$app")"
-  if [[ -n "$metadata_raw" ]]; then
-    metadata_json="{\"deploy_metadata_raw\":$(audit_json_string "$metadata_raw") }"
-  fi
+  metadata_json="$(audit_sanitized_deploy_metadata_json "$metadata_raw")"
 
   if [[ -n "$correlation_id" ]]; then
     audit_upsert_pending_deploy "$app" "$correlation_id" "$source_type" "" "$metadata_json" "$ts"

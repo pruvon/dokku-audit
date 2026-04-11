@@ -13,6 +13,7 @@ AUDIT_DEFAULT_BUSY_TIMEOUT_MS="${DOKKU_AUDIT_BUSY_TIMEOUT_MS:-5000}"
 AUDIT_DEFAULT_PENDING_STALE_THRESHOLD_SECONDS="${DOKKU_AUDIT_PENDING_STALE_THRESHOLD_SECONDS:-86400}"
 AUDIT_DEFAULT_COMMAND_MATCH_WINDOW_SECONDS="${DOKKU_AUDIT_COMMAND_MATCH_WINDOW_SECONDS:-120}"
 AUDIT_DEFAULT_STRICT_MODE="${DOKKU_AUDIT_STRICT_MODE:-false}"
+AUDIT_DEFAULT_DEPLOY_METADATA_MAX_BYTES="${DOKKU_AUDIT_DEPLOY_METADATA_MAX_BYTES:-1024}"
 AUDIT_DEFAULT_JOURNAL_MODE="${DOKKU_AUDIT_JOURNAL_MODE:-WAL}"
 AUDIT_DEFAULT_RUNTIME_USER="${DOKKU_AUDIT_RUNTIME_USER:-dokku}"
 AUDIT_DEFAULT_RUNTIME_GROUP="${DOKKU_AUDIT_RUNTIME_GROUP:-$AUDIT_DEFAULT_RUNTIME_USER}"
@@ -57,6 +58,10 @@ audit_command_match_window_seconds() {
 
 audit_strict_mode() {
   printf '%s\n' "$AUDIT_DEFAULT_STRICT_MODE"
+}
+
+audit_deploy_metadata_max_bytes() {
+  printf '%s\n' "$AUDIT_DEFAULT_DEPLOY_METADATA_MAX_BYTES"
 }
 
 audit_journal_mode_preference() {
@@ -730,6 +735,73 @@ audit_redact_assignment_token() {
   fi
 
   printf '%s=[REDACTED]\n' "${token%%=*}"
+}
+
+audit_is_sensitive_deploy_metadata_key() {
+  local key
+
+  key="$(audit_lower "${1:-}")"
+  case "$key" in
+    *secret*|*token*|*password*|*passwd*|*credential*|*auth*|*private-key*|*private_key*|*access-key*|*access_key*|*api-key*|*api_key*)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+audit_sanitized_deploy_metadata_json() {
+  local metadata_raw="${1:-}"
+  local max_bytes="${2:-$(audit_deploy_metadata_max_bytes)}"
+  local redacted=false
+  local truncated=false
+  local sanitized_raw=""
+  local token
+  local -a sanitized_tokens=()
+
+  if [[ -z "$metadata_raw" ]]; then
+    printf '{}\n'
+    return 0
+  fi
+
+  if ! [[ "$max_bytes" =~ ^[0-9]+$ ]]; then
+    max_bytes=1024
+  fi
+
+  while IFS= read -r token; do
+    [[ -n "$token" ]] || continue
+    if [[ "$token" == *=* ]] && audit_is_sensitive_deploy_metadata_key "${token%%=*}"; then
+      sanitized_tokens+=("$(audit_redact_assignment_token "$token")")
+      redacted=true
+      continue
+    fi
+
+    sanitized_tokens+=("$token")
+  done < <(audit_command_tokens_lines "$metadata_raw")
+
+  sanitized_raw="$(audit_join_args "${sanitized_tokens[@]}")"
+  if [[ -z "$sanitized_raw" ]]; then
+    printf '{}\n'
+    return 0
+  fi
+
+  if [[ "${#sanitized_raw}" -gt "$max_bytes" ]]; then
+    sanitized_raw="${sanitized_raw:0:$max_bytes}"
+    if [[ "$sanitized_raw" == *" "* ]] && [[ "${sanitized_raw: -1}" != " " ]]; then
+      sanitized_raw="${sanitized_raw% *}"
+    fi
+    truncated=true
+  fi
+
+  printf '{"deploy_metadata_raw":%s' "$(audit_json_string "$sanitized_raw")"
+  if audit_is_true "$redacted"; then
+    printf ',"deploy_metadata_redacted":true'
+  fi
+  if audit_is_true "$truncated"; then
+    printf ',"deploy_metadata_truncated":true'
+  fi
+  printf '}\n'
 }
 
 AUDIT_PARSED_TOKENS=()
@@ -2216,13 +2288,15 @@ audit_pretty_json() {
 audit_trigger_guard() {
   local trigger_name="$1"
   local app_name="$2"
+  local exit_code=0
   shift 2
 
   if "$@"; then
     return 0
+  else
+    exit_code=$?
   fi
 
-  local exit_code=$?
   audit_warn "failed to record ${trigger_name}${app_name:+ for app '$app_name'}"
   if audit_is_true "$(audit_strict_mode)"; then
     return "$exit_code"

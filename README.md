@@ -217,6 +217,7 @@ dokku audit:timeline myapp --format json
 - Config values are never stored from `post-config-update`.
 - Only config key names are recorded.
 - General command audit redacts `config:set` values and `dokku run --env` values before storing command metadata.
+- Deploy source metadata is stored conservatively: sensitive `key=value` pairs are redacted and oversized payloads are truncated before insert.
 - Internal follow-on events store the sanitized triggering Dokku command when actor propagation is possible.
 - If you see `ssh-key:default`, `default` is the Dokku `SSH_NAME` label attached to the matching key, not a Unix username.
 - If a Dokku command is run locally via `sudo`, follow-on events and maintenance events can attribute it as `sudo-user:<user>` from `SUDO_USER`.
