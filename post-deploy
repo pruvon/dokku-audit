@@ -9,8 +9,6 @@ source "$AUDIT_SCRIPT_DIR/bootstrap"
 
 audit_handle_post_deploy() {
   local app="$1"
-  local internal_port="${2:-}"
-  local internal_ip_address="${3:-}"
   local image_tag="${4:-}"
   local ts
   local actor_type="system"
@@ -61,8 +59,6 @@ INSERT INTO events (
   json_patch(
     json_patch(
       json_object(
-        'internal_port', $(audit_sql_nullable "$internal_port"),
-        'internal_ip_address', $(audit_sql_nullable "$internal_ip_address"),
         'image_tag', $(audit_sql_nullable "$image_tag"),
         'source_type', (SELECT source_type FROM pending_deploys WHERE app = $app_sql LIMIT 1),
         'rev', (SELECT rev FROM pending_deploys WHERE app = $app_sql LIMIT 1)
