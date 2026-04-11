@@ -949,6 +949,8 @@ audit_normalize_app_argument() {
       value="${value%\'}"
       value="${value#\"}"
       value="${value%\"}"
+      value="${value%/}"
+      value="${value##*/}"
       value="${value%.git}"
       ;;
   esac

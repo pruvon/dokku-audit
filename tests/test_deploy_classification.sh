@@ -19,9 +19,9 @@ setup_test_env deploy_classification_git_push_noise
 run_at '2026-04-08T21:00:00Z' "$REPO_ROOT/subcommands/migrate"
 assert_status 0
 
-run_cmd env DOKKU_AUDIT_NOW='2026-04-08T21:00:01Z' SSH_USER=dokku SSH_NAME=admin "$REPO_ROOT/user-auth" dokku admin git-receive-pack myapp
+run_cmd env DOKKU_AUDIT_NOW='2026-04-08T21:00:01Z' SSH_USER=dokku SSH_NAME=admin "$REPO_ROOT/user-auth" dokku admin "git-receive-pack '/home/dokku/myapp.git'"
 assert_status 0
-run_cmd env DOKKU_AUDIT_NOW='2026-04-08T21:00:02Z' SSH_USER=dokku SSH_NAME=admin "$REPO_ROOT/user-auth" dokku admin git-hook myapp
+run_cmd env DOKKU_AUDIT_NOW='2026-04-08T21:00:02Z' SSH_USER=dokku SSH_NAME=admin "$REPO_ROOT/user-auth" dokku admin "git-hook /home/dokku/myapp.git"
 assert_status 0
 run_at '2026-04-08T21:00:03Z' "$REPO_ROOT/post-config-update" myapp set GIT_REV=abcdef1234567890
 assert_status 0
