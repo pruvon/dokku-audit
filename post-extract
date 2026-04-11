@@ -12,60 +12,19 @@ audit_handle_post_extract() {
   local tmp_work_dir="${2:-}"
   local rev="${3:-}"
   local ts
-  local actor_type="system"
-  local actor_name=""
-  local meta_json
+  local correlation_id
+  local inferred_source_type
 
   [[ -n "$app" ]] || audit_die "missing app name"
 
   ts="$(audit_now_utc)"
-  meta_json="{\"rev\":$(audit_json_or_null "$rev") }"
   audit_claim_pending_event_actor_context "$app" "deploy-extract" "$ts"
-  actor_type="$AUDIT_CONTEXT_ACTOR_TYPE"
-  actor_name="$AUDIT_CONTEXT_ACTOR_NAME"
-  meta_json="$(audit_json_patch_objects "$meta_json" "$AUDIT_CONTEXT_ACTOR_META_JSON")"
-  audit_db_exec "BEGIN IMMEDIATE;
-UPDATE pending_deploys
-SET
-  rev = COALESCE($(audit_sql_nullable "$rev"), rev),
-  updated_ts = $(audit_sql_quote "$ts")
-WHERE app = $(audit_sql_quote "$app");
-INSERT INTO events (
-  ts,
-  app,
-  category,
-  action,
-  status,
-  classification,
-  source_trigger,
-  source_type,
-  image_tag,
-  rev,
-  actor_type,
-  actor_name,
-  correlation_id,
-  message,
-  meta_json,
-  created_at
-) VALUES (
-  $(audit_sql_quote "$ts"),
-  $(audit_sql_quote "$app"),
-  'deploy',
-  'extract',
-  'success',
-  'source_extracted',
-  'post-extract',
-  (SELECT source_type FROM pending_deploys WHERE app = $(audit_sql_quote "$app") LIMIT 1),
-  NULL,
-  $(audit_sql_nullable "$rev"),
-  $(audit_sql_quote "$actor_type"),
-  $(audit_sql_nullable "$actor_name"),
-  (SELECT correlation_id FROM pending_deploys WHERE app = $(audit_sql_quote "$app") LIMIT 1),
-  'source extracted',
-  $(audit_sql_quote "$meta_json"),
-  $(audit_sql_quote "$ts")
-);
-COMMIT;"
+  correlation_id="$(audit_pending_correlation_id "$app")"
+  if [[ -z "$correlation_id" ]]; then
+    correlation_id="$(audit_generate_correlation_id)"
+  fi
+  inferred_source_type="$(audit_inferred_source_type_from_actor_meta_json "$AUDIT_CONTEXT_ACTOR_META_JSON")"
+  audit_upsert_pending_deploy "$app" "$correlation_id" "$inferred_source_type" "$rev" '{}' "$ts"
 
   : "$tmp_work_dir"
 }

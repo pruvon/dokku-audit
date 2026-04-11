@@ -276,6 +276,18 @@ audit_json_remove_key() {
   audit_db_query_single ':memory:' "SELECT json_remove(json($(audit_sql_quote "$input_json")), $(audit_sql_quote "$key_path"));"
 }
 
+audit_json_extract_text() {
+  local input_json="${1:-}"
+  local key_path="$2"
+
+  if [[ -z "$input_json" ]] || [[ -z "$key_path" ]]; then
+    printf '\n'
+    return 0
+  fi
+
+  audit_db_query_single ':memory:' "SELECT COALESCE(json_extract(json($(audit_sql_quote "$input_json")), $(audit_sql_quote "$key_path")), '');"
+}
+
 audit_hostname() {
   if [[ -n "${DOKKU_AUDIT_HOSTNAME:-}" ]]; then
     printf '%s\n' "$DOKKU_AUDIT_HOSTNAME"
@@ -828,7 +840,7 @@ audit_command_uses_first_positional_app() {
   local subcommand="${1:-}"
 
   case "$subcommand" in
-    apps:create|apps:destroy|deploy)
+    apps:create|apps:destroy|deploy|git-hook|git-receive-pack)
       return 0
       ;;
     config:set-global|config:unset-global)
@@ -853,6 +865,23 @@ audit_generic_pre_app_flag_without_value() {
   esac
 
   return 1
+}
+
+audit_normalize_app_argument() {
+  local subcommand="$1"
+  local value="${2:-}"
+
+  case "$subcommand" in
+    git-hook|git-receive-pack)
+      value="${value#\'}"
+      value="${value%\'}"
+      value="${value#\"}"
+      value="${value%\"}"
+      value="${value%.git}"
+      ;;
+  esac
+
+  printf '%s\n' "$value"
 }
 
 audit_parse_generic_arguments() {
@@ -885,7 +914,7 @@ audit_parse_generic_arguments() {
   done
 
   if [[ "$idx" -lt "${#remaining[@]}" ]] && [[ -n "${remaining[$idx]}" ]] && [[ "${remaining[$idx]}" != -* ]]; then
-    AUDIT_PARSED_APP="${remaining[$idx]}"
+    AUDIT_PARSED_APP="$(audit_normalize_app_argument "$subcommand" "${remaining[$idx]}")"
     AUDIT_PARSED_COMMAND_ARGS=("${remaining[@]:$((idx + 1))}")
     AUDIT_PARSED_MATCH_ARGS=("${AUDIT_PARSED_COMMAND_ARGS[@]}")
   fi
@@ -1043,6 +1072,10 @@ audit_should_record_user_auth_command() {
     run|run:detached|enter)
       return 0
       ;;
+    git-hook|git-receive-pack)
+      [[ -n "$app" ]] || return 1
+      return 0
+      ;;
     ""|-*)
       return 1
       ;;
@@ -1057,6 +1090,37 @@ audit_should_record_user_auth_command() {
   esac
 
   return 0
+}
+
+audit_normalized_follow_on_subcommand() {
+  case "${1:-}" in
+    git-hook|git-receive-pack)
+      printf 'git:push\n'
+      return 0
+      ;;
+  esac
+
+  printf '%s\n' "$1"
+}
+
+audit_normalized_follow_on_command_text() {
+  local subcommand="$1"
+  local app="$2"
+  local command_text="$3"
+
+  case "$subcommand" in
+    git-hook|git-receive-pack)
+      if [[ -n "$app" ]]; then
+        printf 'git push %s\n' "$app"
+        return 0
+      fi
+
+      printf 'git push\n'
+      return 0
+      ;;
+  esac
+
+  printf '%s\n' "$command_text"
 }
 
 audit_follow_on_event_kinds_lines() {
@@ -1096,6 +1160,12 @@ audit_follow_on_event_kinds_lines() {
       printf 'ports\n'
       ;;
     ps:restart)
+      printf 'deploy-finish\n'
+      ;;
+    git-hook|git-receive-pack)
+      printf 'deploy-receive\n'
+      printf 'deploy-source-set\n'
+      printf 'deploy-extract\n'
       printf 'deploy-finish\n'
       ;;
     deploy|git:sync|git:from-archive|git:from-directory|git:from-image|git:load-image|ps:rebuild|tags:deploy)
@@ -1168,6 +1238,25 @@ audit_message_for_deploy_finish() {
   printf 'release-only deploy finished\n'
 }
 
+audit_source_type_from_trigger_subcommand() {
+  case "${1:-}" in
+    git:push|git-hook|git-receive-pack)
+      printf 'git-push\n'
+      ;;
+    *)
+      printf '\n'
+      ;;
+  esac
+}
+
+audit_inferred_source_type_from_actor_meta_json() {
+  local actor_meta_json="${1:-}"
+  local source_subcommand
+
+  source_subcommand="$(audit_json_extract_text "$actor_meta_json" '$.triggered_by_subcommand')"
+  audit_source_type_from_trigger_subcommand "$source_subcommand"
+}
+
 audit_message_for_config_change() {
   local action="$1"
   shift
@@ -1194,6 +1283,18 @@ audit_message_for_domains_change() {
 
 audit_message_for_ports_change() {
   printf 'ports %s\n' "$1"
+}
+
+audit_is_internal_config_key() {
+  local key="${1:-}"
+
+  case "$key" in
+    GIT_REV|DOKKU_APP_TYPE|DOKKU_APP_RESTORE)
+      return 0
+      ;;
+  esac
+
+  return 1
 }
 
 audit_mkdirs() {
@@ -1376,6 +1477,93 @@ audit_meta_set() {
 audit_pending_correlation_id() {
   local app="$1"
   audit_db_query_single "SELECT correlation_id FROM pending_deploys WHERE app = $(audit_sql_quote "$app") LIMIT 1;"
+}
+
+audit_upsert_pending_deploy() {
+  local app="$1"
+  local correlation_id="$2"
+  local source_type="${3:-}"
+  local rev="${4:-}"
+  local metadata_json="${5:-}"
+  local ts="${6:-$(audit_now_utc)}"
+
+  [[ -n "$app" ]] || return 0
+
+  if [[ -z "$correlation_id" ]]; then
+    correlation_id="$(audit_generate_correlation_id)"
+  fi
+
+  if [[ -z "$metadata_json" ]]; then
+    metadata_json='{}'
+  fi
+
+  audit_db_exec "INSERT INTO pending_deploys(
+    app,
+    correlation_id,
+    source_type,
+    rev,
+    metadata_json,
+    first_seen_ts,
+    updated_ts
+  ) VALUES (
+    $(audit_sql_quote "$app"),
+    $(audit_sql_quote "$correlation_id"),
+    $(audit_sql_nullable "$source_type"),
+    $(audit_sql_nullable "$rev"),
+    $(audit_sql_quote "$metadata_json"),
+    $(audit_sql_quote "$ts"),
+    $(audit_sql_quote "$ts")
+  ) ON CONFLICT(app) DO UPDATE SET
+    correlation_id = excluded.correlation_id,
+    source_type = COALESCE(excluded.source_type, pending_deploys.source_type),
+    rev = COALESCE(excluded.rev, pending_deploys.rev),
+    metadata_json = json_patch(COALESCE(pending_deploys.metadata_json, '{}'), json(excluded.metadata_json)),
+    updated_ts = excluded.updated_ts;"
+}
+
+audit_recent_deploy_finish_id() {
+  local app="$1"
+  local ts="${2:-$(audit_now_utc)}"
+
+  [[ -n "$app" ]] || return 0
+
+  audit_db_query_single "SELECT id
+FROM events
+WHERE app = $(audit_sql_quote "$app")
+  AND category = 'deploy'
+  AND action = 'finish'
+  AND source_trigger = 'post-deploy'
+  AND ts >= strftime('%Y-%m-%dT%H:%M:%SZ', $(audit_sql_quote "$ts"), '-$(audit_command_match_window_seconds) seconds')
+ORDER BY ts DESC
+LIMIT 1;"
+}
+
+audit_patch_deploy_finish_from_source_metadata() {
+  local event_id="$1"
+  local correlation_id="$2"
+  local source_type="${3:-}"
+  local metadata_json="${4:-}"
+
+  [[ -n "$event_id" ]] || return 0
+
+  if [[ -z "$metadata_json" ]]; then
+    metadata_json='{}'
+  fi
+
+  audit_db_exec "UPDATE events
+SET classification = 'source_deploy',
+    source_type = COALESCE($(audit_sql_nullable "$source_type"), source_type),
+    correlation_id = COALESCE(correlation_id, $(audit_sql_nullable "$correlation_id")),
+    message = 'source deploy finished',
+    meta_json = json_patch(
+      COALESCE(meta_json, '{}'),
+      CASE
+        WHEN $(audit_sql_quote "$metadata_json") != '{}'
+        THEN json_object('pending_metadata', json($(audit_sql_quote "$metadata_json")))
+        ELSE '{}'
+      END
+    )
+WHERE id = $(audit_sql_quote "$event_id");"
 }
 
 audit_event_json_sql() {
@@ -2053,6 +2241,14 @@ audit_extract_config_keys() {
     fi
     printf '%s\n' "$key"
   done
+}
+
+audit_should_record_config_key() {
+  if audit_is_internal_config_key "${1:-}"; then
+    return 1
+  fi
+
+  return 0
 }
 
 audit_print_help() {

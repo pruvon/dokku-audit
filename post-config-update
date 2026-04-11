@@ -13,6 +13,7 @@ audit_handle_post_config_update() {
   shift 2 || true
   local ts
   local keys=()
+  local filtered_keys=()
   local message
   local actor_type="system"
   local actor_name=""
@@ -27,9 +28,19 @@ audit_handle_post_config_update() {
     keys+=("$key")
   done < <(audit_extract_config_keys "$@")
 
+  for key in "${keys[@]}"; do
+    if audit_should_record_config_key "$key"; then
+      filtered_keys+=("$key")
+    fi
+  done
+
+  if [[ "${#filtered_keys[@]}" -eq 0 ]]; then
+    return 0
+  fi
+
   ts="$(audit_now_utc)"
-  message="$(audit_message_for_config_change "$action" "${keys[@]}")"
-  meta_json="{\"keys\":$(audit_json_array_from_args "${keys[@]}"),\"value_redacted\":true}"
+  message="$(audit_message_for_config_change "$action" "${filtered_keys[@]}")"
+  meta_json="{\"keys\":$(audit_json_array_from_args "${filtered_keys[@]}"),\"value_redacted\":true}"
   audit_claim_pending_event_actor_context "$app" "config" "$ts"
   actor_type="$AUDIT_CONTEXT_ACTOR_TYPE"
   actor_name="$AUDIT_CONTEXT_ACTOR_NAME"

@@ -44,7 +44,7 @@ import sys
 
 payload = json.loads(sys.argv[1])
 assert payload["plugin"] == "dokku-audit"
-assert len(payload["events"]) == 7
+assert len(payload["events"]) == 6
 PY
 
 run_cmd "$REPO_ROOT/subcommands/export" audit:export --format json --app myapp
@@ -54,8 +54,8 @@ assert_contains "$RUN_OUTPUT" '"events"'
 
 run_cmd "$REPO_ROOT/subcommands/recent" --format jsonl --limit 2
 assert_status 0
-assert_contains "$RUN_OUTPUT" '"id":8'
 assert_contains "$RUN_OUTPUT" '"id":7'
+assert_contains "$RUN_OUTPUT" '"id":6'
 
 run_cmd "$REPO_ROOT/subcommands/recent" audit:recent
 assert_status 0

@@ -44,7 +44,7 @@ run_at '2026-04-08T21:00:05Z' "$REPO_ROOT/post-deploy" myapp 5000 172.17.0.8 dok
 assert_status 0
 
 assert_eq '0' "$(db_query_single "SELECT COUNT(1) FROM events WHERE classification = 'dokku_command';")"
-assert_eq '4' "$(db_query_single "SELECT COUNT(1) FROM events WHERE category = 'deploy' AND actor_name = 'alice';")"
+assert_eq '2' "$(db_query_single "SELECT COUNT(1) FROM events WHERE category = 'deploy' AND actor_name = 'alice';")"
 assert_eq 'alice' "$(db_query_single "SELECT actor_name FROM events WHERE classification = 'source_received' LIMIT 1;")"
 assert_eq 'alice' "$(db_query_single "SELECT actor_name FROM events WHERE classification = 'source_deploy' LIMIT 1;")"
 assert_eq 'dokku' "$(db_query_single "SELECT json_extract(meta_json, '$.ssh_user') FROM events WHERE classification = 'source_deploy' LIMIT 1;")"

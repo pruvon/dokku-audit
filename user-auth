@@ -34,6 +34,8 @@ audit_handle_user_auth() {
   local message
   local event_kind
   local follow_on_event_count=0
+  local follow_on_subcommand
+  local follow_on_command_text
   local -a command_tokens=()
   local -a sanitized_tokens=()
   local token
@@ -97,13 +99,15 @@ audit_handle_user_auth() {
   general_args_json="$(audit_json_array_from_args "${AUDIT_PARSED_COMMAND_ARGS[@]}")"
   match_args_json="$(audit_json_array_from_args "${parsed_match_args[@]}")"
   command_text="$(audit_prefixed_dokku_command_text "${sanitized_tokens[@]}")"
+  follow_on_subcommand="$(audit_normalized_follow_on_subcommand "$subcommand")"
+  follow_on_command_text="$(audit_normalized_follow_on_command_text "$subcommand" "$app" "$command_text")"
   message="$(audit_message_for_command_invoke "$command_text" "$subcommand")"
   meta_json="$(audit_json_patch_objects "$(audit_command_event_meta_json "$actor_source" "$command_text" "$subcommand" "$general_args_json" "$container_type" "$container_id" "$hostname" "authorized")" "$(audit_json_remove_key "$actor_meta_json" '$.actor_source')")"
 
   while IFS= read -r event_kind; do
     [[ -n "$event_kind" ]] || continue
     follow_on_event_count=$((follow_on_event_count + 1))
-    audit_store_pending_event_actor_context "$app" "$event_kind" "$subcommand" "$command_text" "$actor_type" "$actor_name" "$actor_meta_json" "$ts"
+    audit_store_pending_event_actor_context "$app" "$event_kind" "$follow_on_subcommand" "$follow_on_command_text" "$actor_type" "$actor_name" "$actor_meta_json" "$ts"
   done < <(audit_follow_on_event_kinds_lines "$subcommand" "$app" "${AUDIT_PARSED_TRAILING_TOKENS[@]}")
 
   case "$subcommand" in

@@ -14,6 +14,7 @@ audit_handle_receive_app() {
   local actor_type="system"
   local actor_name=""
   local correlation_id
+  local inferred_source_type
   local metadata_json
   local meta_json
 
@@ -29,6 +30,7 @@ audit_handle_receive_app() {
   audit_claim_pending_event_actor_context "$app" "deploy-receive" "$ts"
   actor_type="$AUDIT_CONTEXT_ACTOR_TYPE"
   actor_name="$AUDIT_CONTEXT_ACTOR_NAME"
+  inferred_source_type="$(audit_inferred_source_type_from_actor_meta_json "$AUDIT_CONTEXT_ACTOR_META_JSON")"
   meta_json="$(audit_json_patch_objects "$meta_json" "$AUDIT_CONTEXT_ACTOR_META_JSON")"
 
   audit_db_exec "BEGIN IMMEDIATE;
@@ -43,7 +45,7 @@ INSERT INTO pending_deploys(
 ) VALUES (
   $(audit_sql_quote "$app"),
   $(audit_sql_quote "$correlation_id"),
-  NULL,
+  $(audit_sql_nullable "$inferred_source_type"),
   $(audit_sql_nullable "$rev"),
   $(audit_sql_quote "$metadata_json"),
   $(audit_sql_quote "$ts"),

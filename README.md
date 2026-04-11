@@ -106,10 +106,10 @@ Default paths:
 
 - App create and destroy events
 - Selected Dokku command invocations recorded through `user-auth`, with actor attribution, target app extraction for supported app-scoped commands, `SSH_USER`/`SSH_NAME` capture, best-effort SSH key fingerprint lookup, noisy read-only polling/report commands skipped, and commands with richer structured follow-on events represented by those follow-on events instead of a duplicate `dokku_command` row
-- Deploy flow events such as `receive-app`, `deploy-source-set`, `post-extract`, and `post-deploy`
+- Source receipt plus final deploy completion events; intermediate Dokku source-stage hooks are used to enrich the final deploy record without adding extra timeline noise
 - Structured `dokku run` and `dokku enter` events, including actor and target container/process context when Dokku exposes it
 - Follow-on app events inherit the triggering actor and Dokku command when the preceding command can be matched confidently
-- Config changes with value redaction
+- Config changes with value redaction, excluding known Dokku-managed deploy bookkeeping keys such as `GIT_REV`, `DOKKU_APP_TYPE`, and `DOKKU_APP_RESTORE`
 - Domain changes
 - Port changes
 - Maintenance events like migration, backup, vacuum, and prune

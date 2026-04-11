@@ -13,88 +13,39 @@ audit_handle_deploy_source_set() {
   shift 2 || true
   local metadata_raw="$*"
   local ts
-  local actor_type="system"
-  local actor_name=""
   local correlation_id
   local metadata_json='{}'
-  local meta_json
+  local recent_finish_id
+  local recent_finish_correlation_id
 
   [[ -n "$app" ]] || audit_die "missing app name"
   [[ -n "$source_type" ]] || audit_die "missing source type"
 
   ts="$(audit_now_utc)"
+  audit_claim_pending_event_actor_context "$app" "deploy-source-set" "$ts"
   correlation_id="$(audit_pending_correlation_id "$app")"
-  if [[ -z "$correlation_id" ]]; then
-    correlation_id="$(audit_generate_correlation_id)"
-  fi
   if [[ -n "$metadata_raw" ]]; then
     metadata_json="{\"deploy_metadata_raw\":$(audit_json_string "$metadata_raw") }"
   fi
-  meta_json="{\"source_type\":$(audit_json_string "$source_type"),\"deploy_metadata_raw\":$(audit_json_or_null "$metadata_raw") }"
-  audit_claim_pending_event_actor_context "$app" "deploy-source-set" "$ts"
-  actor_type="$AUDIT_CONTEXT_ACTOR_TYPE"
-  actor_name="$AUDIT_CONTEXT_ACTOR_NAME"
-  meta_json="$(audit_json_patch_objects "$meta_json" "$AUDIT_CONTEXT_ACTOR_META_JSON")"
 
-  audit_db_exec "BEGIN IMMEDIATE;
-INSERT INTO pending_deploys(
-  app,
-  correlation_id,
-  source_type,
-  rev,
-  metadata_json,
-  first_seen_ts,
-  updated_ts
-) VALUES (
-  $(audit_sql_quote "$app"),
-  $(audit_sql_quote "$correlation_id"),
-  $(audit_sql_quote "$source_type"),
-  NULL,
-  $(audit_sql_quote "$metadata_json"),
-  $(audit_sql_quote "$ts"),
-  $(audit_sql_quote "$ts")
-) ON CONFLICT(app) DO UPDATE SET
-  correlation_id = excluded.correlation_id,
-  source_type = excluded.source_type,
-  rev = COALESCE(pending_deploys.rev, excluded.rev),
-  metadata_json = json_patch(COALESCE(pending_deploys.metadata_json, '{}'), json(excluded.metadata_json)),
-  updated_ts = excluded.updated_ts;
-INSERT INTO events (
-  ts,
-  app,
-  category,
-  action,
-  status,
-  classification,
-  source_trigger,
-  source_type,
-  image_tag,
-  rev,
-  actor_type,
-  actor_name,
-  correlation_id,
-  message,
-  meta_json,
-  created_at
-) VALUES (
-  $(audit_sql_quote "$ts"),
-  $(audit_sql_quote "$app"),
-  'deploy',
-  'source-set',
-  'success',
-  'deploy_source_metadata',
-  'deploy-source-set',
-  $(audit_sql_quote "$source_type"),
-  NULL,
-  NULL,
-  $(audit_sql_quote "$actor_type"),
-  $(audit_sql_nullable "$actor_name"),
-  $(audit_sql_quote "$correlation_id"),
-  'deploy source metadata recorded',
-  $(audit_sql_quote "$meta_json"),
-  $(audit_sql_quote "$ts")
-);
-COMMIT;"
+  if [[ -n "$correlation_id" ]]; then
+    audit_upsert_pending_deploy "$app" "$correlation_id" "$source_type" "" "$metadata_json" "$ts"
+    return 0
+  fi
+
+  recent_finish_id="$(audit_recent_deploy_finish_id "$app" "$ts")"
+  if [[ -n "$recent_finish_id" ]]; then
+    recent_finish_correlation_id="$(audit_db_query_single "SELECT COALESCE(correlation_id, '') FROM events WHERE id = $(audit_sql_quote "$recent_finish_id") LIMIT 1;")"
+    if [[ -z "$recent_finish_correlation_id" ]]; then
+      recent_finish_correlation_id="$(audit_generate_correlation_id)"
+    fi
+
+    audit_patch_deploy_finish_from_source_metadata "$recent_finish_id" "$recent_finish_correlation_id" "$source_type" "$metadata_json"
+    return 0
+  fi
+
+  correlation_id="$(audit_generate_correlation_id)"
+  audit_upsert_pending_deploy "$app" "$correlation_id" "$source_type" "" "$metadata_json" "$ts"
 }
 
 audit_trigger_guard "deploy-source-set" "${1:-}" audit_handle_deploy_source_set "$@"
