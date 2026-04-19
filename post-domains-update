@@ -19,7 +19,7 @@ audit_handle_post_domains_update() {
   local meta_json
 
   [[ -n "$app" ]] || audit_die "missing app name"
-  [[ -n "$action" ]] || audit_die "missing domains action"
+  [[ -n "$action" ]] || return 0
 
   ts="$(audit_now_utc)"
   message="$(audit_message_for_domains_change "$action" "${domains[@]}")"

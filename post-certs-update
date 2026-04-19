@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -eo pipefail
+[[ $DOKKU_TRACE ]] && set -x
+
+AUDIT_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# shellcheck source=/dev/null
+source "$AUDIT_SCRIPT_DIR/bootstrap"
+
+audit_handle_post_certs_update() {
+  local app="$1"
+  local ts
+  local message
+  local actor_type="system"
+  local actor_name=""
+  local meta_json
+  local source_subcommand
+  local manager
+
+  [[ -n "$app" ]] || audit_die "missing app name"
+
+  ts="$(audit_now_utc)"
+  audit_claim_pending_event_actor_context "$app" "certs" "$ts"
+  actor_type="$AUDIT_CONTEXT_ACTOR_TYPE"
+  actor_name="$AUDIT_CONTEXT_ACTOR_NAME"
+  source_subcommand="$(audit_json_extract_text "$AUDIT_CONTEXT_ACTOR_META_JSON" '$.triggered_by_subcommand')"
+  manager="$(audit_certs_change_manager_from_subcommand "$source_subcommand")"
+  message="$(audit_message_for_certs_change update "$manager")"
+  meta_json="{\"certs_present\":true,\"material_redacted\":true,\"manager\":$(audit_json_or_null "$manager") }"
+  meta_json="$(audit_json_patch_objects "$meta_json" "$AUDIT_CONTEXT_ACTOR_META_JSON")"
+
+  audit_insert_event "$app" "certs" "update" "success" "certs_change" "post-certs-update" "" "" "" "$actor_type" "$actor_name" "" "$message" "$meta_json" "$ts" "$ts"
+}
+
+audit_trigger_guard "post-certs-update" "${1:-}" audit_handle_post_certs_update "$@"

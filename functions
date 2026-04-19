@@ -1064,6 +1064,7 @@ audit_sanitized_dokku_command_tokens_lines() {
   local token
   local next_token
   local command_seen=0
+  local letsencrypt_set_key_seen=0
   local idx=0
 
   audit_parse_dokku_invocation "${tokens[@]}"
@@ -1084,6 +1085,19 @@ audit_sanitized_dokku_command_tokens_lines() {
     case "$subcommand" in
       config:set|config:set-global)
         sanitized+=("$(audit_redact_assignment_token "$token")")
+        idx=$((idx + 1))
+        ;;
+      letsencrypt:set)
+        if [[ "$token" == "--global" ]]; then
+          sanitized+=("$token")
+        elif [[ -n "$AUDIT_PARSED_APP" ]] && [[ "$token" == "$AUDIT_PARSED_APP" ]]; then
+          sanitized+=("$token")
+        elif [[ "$letsencrypt_set_key_seen" -eq 0 ]]; then
+          sanitized+=("$token")
+          letsencrypt_set_key_seen=1
+        else
+          sanitized+=('[REDACTED]')
+        fi
         idx=$((idx + 1))
         ;;
       run|run:detached)
@@ -1153,7 +1167,7 @@ audit_should_record_user_auth_command() {
     ""|-*)
       return 1
       ;;
-    audit|audit:*|help|version|report|logs|config|apps:list|apps:exists|ps:retire|*:list|*:report|*:info|*:show|*:exists|*:links|*:app-links)
+    audit|audit:*|help|version|report|logs|config|apps:list|apps:exists|ps:retire|letsencrypt:active|*:list|*:report|*:info|*:show|*:exists|*:links|*:app-links)
       return 1
       ;;
     resource:limit)
@@ -1232,6 +1246,9 @@ audit_follow_on_event_kinds_lines() {
       ;;
     ports:*|proxy:ports*)
       printf 'ports\n'
+      ;;
+    certs:add|certs:generate|certs:remove|letsencrypt:auto-renew|letsencrypt:disable|letsencrypt:enable)
+      printf 'certs\n'
       ;;
     ps:restart)
       printf 'deploy-finish\n'
@@ -1357,6 +1374,206 @@ audit_message_for_domains_change() {
 
 audit_message_for_ports_change() {
   printf 'ports %s\n' "$1"
+}
+
+audit_certs_manager_from_subcommand() {
+  case "${1:-}" in
+    letsencrypt:*)
+      printf 'letsencrypt\n'
+      ;;
+    certs:*)
+      printf 'certs\n'
+      ;;
+    *)
+      printf '\n'
+      ;;
+  esac
+}
+
+audit_certs_change_manager_from_subcommand() {
+  case "${1:-}" in
+    letsencrypt:*)
+      printf 'letsencrypt\n'
+      ;;
+    certs:*)
+      printf 'manual\n'
+      ;;
+    *)
+      printf '\n'
+      ;;
+  esac
+}
+
+audit_certs_command_action() {
+  local subcommand="${1:-}"
+  shift || true
+
+  case "$subcommand" in
+    letsencrypt:cron-job)
+      case " $* " in
+        *' --add '*)
+          printf 'cron-job-add\n'
+          ;;
+        *' --remove '*)
+          printf 'cron-job-remove\n'
+          ;;
+        *)
+          printf 'cron-job\n'
+          ;;
+      esac
+      ;;
+    *:*)
+      printf '%s\n' "${subcommand#*:}"
+      ;;
+    *)
+      printf '%s\n' "$subcommand"
+      ;;
+  esac
+}
+
+audit_letsencrypt_scope_from_args() {
+  if [[ "${1:-}" == "--global" ]]; then
+    printf 'global\n'
+    return 0
+  fi
+
+  printf 'app\n'
+}
+
+audit_letsencrypt_property_key_from_args() {
+  if [[ "${1:-}" == "--global" ]]; then
+    printf '%s\n' "${2:-}"
+    return 0
+  fi
+
+  printf '%s\n' "${1:-}"
+}
+
+audit_letsencrypt_property_has_value() {
+  if [[ "${1:-}" == "--global" ]]; then
+    [[ "$#" -ge 3 ]]
+    return
+  fi
+
+  [[ "$#" -ge 2 ]]
+}
+
+audit_should_insert_certs_command_event() {
+  case "${1:-}" in
+    certs:add|certs:generate|certs:remove|letsencrypt:auto-renew|letsencrypt:cleanup|letsencrypt:cron-job|letsencrypt:disable|letsencrypt:enable|letsencrypt:revoke|letsencrypt:set)
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
+audit_message_for_certs_command() {
+  local subcommand="${1:-}"
+  shift || true
+  local action
+  local property_key
+  local scope
+
+  case "$subcommand" in
+    letsencrypt:set)
+      property_key="$(audit_letsencrypt_property_key_from_args "$@")"
+      scope="$(audit_letsencrypt_scope_from_args "$@")"
+      if audit_letsencrypt_property_has_value "$@"; then
+        printf 'letsencrypt property set'
+      else
+        printf 'letsencrypt property unset'
+      fi
+      if [[ -n "$property_key" ]]; then
+        printf ': %s' "$property_key"
+      fi
+      if [[ "$scope" == 'global' ]]; then
+        printf ' (global)'
+      fi
+      printf '\n'
+      return 0
+      ;;
+    letsencrypt:cron-job)
+      action="$(audit_certs_command_action "$subcommand" "$@")"
+      case "$action" in
+        cron-job-add)
+          printf 'letsencrypt auto-renew cron job enabled\n'
+          ;;
+        cron-job-remove)
+          printf 'letsencrypt auto-renew cron job disabled\n'
+          ;;
+        *)
+          printf 'letsencrypt cron job requested\n'
+          ;;
+      esac
+      return 0
+      ;;
+  esac
+
+  printf '%s %s requested\n' "$(audit_certs_manager_from_subcommand "$subcommand")" "$(audit_certs_command_action "$subcommand" "$@")"
+}
+
+audit_message_for_certs_change() {
+  local action="${1:-}"
+  local manager="${2:-}"
+
+  case "$action" in
+    update)
+      action='updated'
+      ;;
+    remove)
+      action='removed'
+      ;;
+  esac
+
+  if [[ "$manager" == 'letsencrypt' ]]; then
+    printf 'letsencrypt certificates %s\n' "$action"
+    return 0
+  fi
+
+  printf 'certificates %s\n' "$action"
+}
+
+audit_insert_certs_command_event() {
+  local app="$1"
+  local subcommand="$2"
+  local command_text="$3"
+  local actor_source="$4"
+  local actor_type="$5"
+  local actor_name="$6"
+  local actor_meta_json="$7"
+  local hostname="$8"
+  local ts="$9"
+  shift 9 || true
+  local -a command_args=("$@")
+  local args_json
+  local action
+  local manager
+  local message
+  local meta_json
+  local scope=""
+  local property_key=""
+  local value_redacted=false
+  local extra_meta_json
+
+  args_json="$(audit_json_array_from_args "${command_args[@]}")"
+  action="$(audit_certs_command_action "$subcommand" "${command_args[@]}")"
+  manager="$(audit_certs_manager_from_subcommand "$subcommand")"
+  message="$(audit_message_for_certs_command "$subcommand" "${command_args[@]}")"
+  meta_json="$(audit_json_patch_objects "$(audit_command_event_meta_json "$actor_source" "$command_text" "$subcommand" "$args_json" "" "" "$hostname" "authorized")" "$(audit_json_remove_key "$actor_meta_json" '$.actor_source')")"
+
+  if [[ "$subcommand" == 'letsencrypt:set' ]]; then
+    scope="$(audit_letsencrypt_scope_from_args "${command_args[@]}")"
+    property_key="$(audit_letsencrypt_property_key_from_args "${command_args[@]}")"
+    if audit_letsencrypt_property_has_value "${command_args[@]}"; then
+      value_redacted=true
+    fi
+  fi
+
+  extra_meta_json="{\"manager\":$(audit_json_or_null "$manager"),\"scope\":$(audit_json_or_null "$scope"),\"property\":$(audit_json_or_null "$property_key"),\"value_redacted\":$value_redacted}"
+  meta_json="$(audit_json_patch_objects "$meta_json" "$extra_meta_json")"
+
+  audit_insert_event "$app" "certs" "$action" "success" "certs_command" "user-auth" "" "" "" "$actor_type" "$actor_name" "" "$message" "$meta_json" "$ts" "$ts"
 }
 
 audit_is_internal_config_key() {

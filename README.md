@@ -109,6 +109,7 @@ Default paths:
 - Source receipt plus final deploy completion events; intermediate Dokku source-stage hooks are used to enrich the final deploy record without adding extra timeline noise
 - Structured `dokku run` and `dokku enter` events, including actor and target container/process context when Dokku exposes it
 - Follow-on app events inherit the triggering actor and Dokku command when the preceding command can be matched confidently
+- Structured certificate-management command events plus certificate install/remove follow-on events for `certs:*` and `letsencrypt:*` flows
 - Config changes with value redaction, excluding known Dokku-managed deploy bookkeeping keys such as `GIT_REV`, `DOKKU_APP_TYPE`, and `DOKKU_APP_RESTORE`
 - Domain changes
 - Port changes

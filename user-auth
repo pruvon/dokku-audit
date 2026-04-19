@@ -118,6 +118,11 @@ audit_handle_user_auth() {
       ;;
   esac
 
+  if audit_should_insert_certs_command_event "$subcommand"; then
+    audit_insert_certs_command_event "$app" "$subcommand" "$command_text" "$actor_source" "$actor_type" "$actor_name" "$actor_meta_json" "$hostname" "$ts" "${AUDIT_PARSED_COMMAND_ARGS[@]}"
+    return 0
+  fi
+
   if [[ "$follow_on_event_count" -gt 0 ]]; then
     return 0
   fi

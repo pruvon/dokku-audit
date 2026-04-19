@@ -60,6 +60,8 @@ run_cmd env DOKKU_AUDIT_NOW='2026-04-08T20:01:11Z' "$REPO_ROOT/user-auth" dokku 
 assert_status 0
 run_cmd env DOKKU_AUDIT_NOW='2026-04-08T20:01:12Z' "$REPO_ROOT/user-auth" dokku alice resource:limit myapp
 assert_status 0
+run_cmd env DOKKU_AUDIT_NOW='2026-04-08T20:01:13Z' "$REPO_ROOT/user-auth" dokku alice letsencrypt:active myapp
+assert_status 0
 
 assert_eq '1' "$(db_query_single "SELECT COUNT(1) FROM events WHERE category = 'command';")"
 assert_eq '0' "$(db_query_single 'SELECT COUNT(1) FROM pending_command_contexts;')"
@@ -152,6 +154,102 @@ assert_eq 'alice' "$(db_query_single "SELECT actor_name FROM events WHERE classi
 assert_eq 'ports:add' "$(db_query_single "SELECT json_extract(meta_json, '$.triggered_by_subcommand') FROM events WHERE classification = 'ports_change' LIMIT 1;")"
 assert_eq '2' "$(db_query_single "SELECT json_extract(meta_json, '$.port_mapping_count') FROM events WHERE classification = 'ports_change' LIMIT 1;")"
 assert_eq '1' "$(db_query_single "SELECT json_extract(meta_json, '$.details_redacted') FROM events WHERE classification = 'ports_change' LIMIT 1;")"
+
+setup_test_env command_audit_letsencrypt_enable
+run_at '2026-04-08T20:00:00Z' "$REPO_ROOT/subcommands/migrate"
+assert_status 0
+
+run_cmd env DOKKU_AUDIT_NOW='2026-04-08T20:07:00Z' SSH_USER=dokku SSH_NAME=alice "$REPO_ROOT/user-auth" dokku alice letsencrypt:enable myapp
+assert_status 0
+run_at '2026-04-08T20:07:01Z' "$REPO_ROOT/post-certs-update" myapp
+assert_status 0
+run_at '2026-04-08T20:07:02Z' "$REPO_ROOT/post-domains-update" myapp
+assert_status 0
+
+assert_eq '0' "$(db_query_single "SELECT COUNT(1) FROM events WHERE classification = 'dokku_command';")"
+assert_eq '1' "$(db_query_single "SELECT COUNT(1) FROM events WHERE classification = 'certs_command';")"
+assert_eq '1' "$(db_query_single "SELECT COUNT(1) FROM events WHERE classification = 'certs_change';")"
+assert_eq 'alice' "$(db_query_single "SELECT actor_name FROM events WHERE classification = 'certs_command' LIMIT 1;")"
+assert_eq 'letsencrypt:enable' "$(db_query_single "SELECT json_extract(meta_json, '$.subcommand') FROM events WHERE classification = 'certs_command' LIMIT 1;")"
+assert_eq 'alice' "$(db_query_single "SELECT actor_name FROM events WHERE classification = 'certs_change' LIMIT 1;")"
+assert_eq 'letsencrypt:enable' "$(db_query_single "SELECT json_extract(meta_json, '$.triggered_by_subcommand') FROM events WHERE classification = 'certs_change' LIMIT 1;")"
+assert_eq 'letsencrypt' "$(db_query_single "SELECT json_extract(meta_json, '$.manager') FROM events WHERE classification = 'certs_change' LIMIT 1;")"
+assert_eq '1' "$(db_query_single "SELECT json_extract(meta_json, '$.certs_present') FROM events WHERE classification = 'certs_change' LIMIT 1;")"
+assert_eq '1' "$(db_query_single "SELECT json_extract(meta_json, '$.material_redacted') FROM events WHERE classification = 'certs_change' LIMIT 1;")"
+assert_eq '0' "$(db_query_single 'SELECT COUNT(1) FROM pending_event_actor_contexts;')"
+
+setup_test_env command_audit_letsencrypt_set
+run_at '2026-04-08T20:00:00Z' "$REPO_ROOT/subcommands/migrate"
+assert_status 0
+
+run_cmd env DOKKU_AUDIT_NOW='2026-04-08T20:08:00Z' SSH_USER=dokku SSH_NAME=alice "$REPO_ROOT/user-auth" dokku alice letsencrypt:set myapp dns-provider-NAMECHEAP_API_KEY supersecret
+assert_status 0
+
+assert_eq '1' "$(db_query_single "SELECT COUNT(1) FROM events WHERE classification = 'certs_command';")"
+assert_eq 'letsencrypt:set' "$(db_query_single "SELECT json_extract(meta_json, '$.subcommand') FROM events WHERE classification = 'certs_command' LIMIT 1;")"
+assert_eq 'dns-provider-NAMECHEAP_API_KEY' "$(db_query_single "SELECT json_extract(meta_json, '$.property') FROM events WHERE classification = 'certs_command' LIMIT 1;")"
+assert_eq '1' "$(db_query_single "SELECT json_extract(meta_json, '$.value_redacted') FROM events WHERE classification = 'certs_command' LIMIT 1;")"
+command_meta="$(db_query_single "SELECT json_extract(meta_json, '$.command') FROM events WHERE classification = 'certs_command' LIMIT 1;")"
+assert_contains "$command_meta" 'dns-provider-NAMECHEAP_API_KEY'
+assert_contains "$command_meta" '[REDACTED]'
+assert_not_contains "$command_meta" 'supersecret'
+assert_eq '[REDACTED]' "$(db_query_single "SELECT json_extract(meta_json, '$.args[1]') FROM events WHERE classification = 'certs_command' LIMIT 1;")"
+assert_eq '0' "$(db_query_single 'SELECT COUNT(1) FROM pending_event_actor_contexts;')"
+
+setup_test_env command_audit_certs_remove
+run_at '2026-04-08T20:00:00Z' "$REPO_ROOT/subcommands/migrate"
+assert_status 0
+
+run_cmd env DOKKU_AUDIT_NOW='2026-04-08T20:09:00Z' SSH_USER=dokku SSH_NAME=alice "$REPO_ROOT/user-auth" dokku alice certs:remove myapp
+assert_status 0
+run_at '2026-04-08T20:09:01Z' "$REPO_ROOT/post-certs-remove" myapp
+assert_status 0
+run_at '2026-04-08T20:09:02Z' "$REPO_ROOT/post-domains-update" myapp
+assert_status 0
+
+assert_eq '0' "$(db_query_single "SELECT COUNT(1) FROM events WHERE classification = 'dokku_command';")"
+assert_eq '1' "$(db_query_single "SELECT COUNT(1) FROM events WHERE classification = 'certs_command';")"
+assert_eq '1' "$(db_query_single "SELECT COUNT(1) FROM events WHERE classification = 'certs_change';")"
+assert_eq 'certs:remove' "$(db_query_single "SELECT json_extract(meta_json, '$.subcommand') FROM events WHERE classification = 'certs_command' LIMIT 1;")"
+assert_eq 'alice' "$(db_query_single "SELECT actor_name FROM events WHERE classification = 'certs_change' LIMIT 1;")"
+assert_eq 'certs:remove' "$(db_query_single "SELECT json_extract(meta_json, '$.triggered_by_subcommand') FROM events WHERE classification = 'certs_change' LIMIT 1;")"
+assert_eq 'manual' "$(db_query_single "SELECT json_extract(meta_json, '$.manager') FROM events WHERE classification = 'certs_change' LIMIT 1;")"
+assert_eq '0' "$(db_query_single "SELECT json_extract(meta_json, '$.certs_present') FROM events WHERE classification = 'certs_change' LIMIT 1;")"
+assert_eq '0' "$(db_query_single 'SELECT COUNT(1) FROM pending_event_actor_contexts;')"
+
+setup_test_env command_audit_letsencrypt_auto_renew
+run_at '2026-04-08T20:00:00Z' "$REPO_ROOT/subcommands/migrate"
+assert_status 0
+
+run_cmd env DOKKU_AUDIT_NOW='2026-04-08T20:10:00Z' SSH_USER=dokku SSH_NAME=alice "$REPO_ROOT/user-auth" dokku alice letsencrypt:auto-renew myapp
+assert_status 0
+run_at '2026-04-08T20:10:01Z' "$REPO_ROOT/post-certs-update" myapp
+assert_status 0
+
+assert_eq '1' "$(db_query_single "SELECT COUNT(1) FROM events WHERE classification = 'certs_command';")"
+assert_eq '1' "$(db_query_single "SELECT COUNT(1) FROM events WHERE classification = 'certs_change';")"
+assert_eq 'letsencrypt:auto-renew' "$(db_query_single "SELECT json_extract(meta_json, '$.subcommand') FROM events WHERE classification = 'certs_command' LIMIT 1;")"
+assert_eq 'alice' "$(db_query_single "SELECT actor_name FROM events WHERE classification = 'certs_change' LIMIT 1;")"
+assert_eq 'letsencrypt:auto-renew' "$(db_query_single "SELECT json_extract(meta_json, '$.triggered_by_subcommand') FROM events WHERE classification = 'certs_change' LIMIT 1;")"
+assert_eq 'letsencrypt' "$(db_query_single "SELECT json_extract(meta_json, '$.manager') FROM events WHERE classification = 'certs_change' LIMIT 1;")"
+assert_eq '0' "$(db_query_single 'SELECT COUNT(1) FROM pending_event_actor_contexts;')"
+
+setup_test_env command_audit_letsencrypt_revoke
+run_at '2026-04-08T20:00:00Z' "$REPO_ROOT/subcommands/migrate"
+assert_status 0
+
+run_cmd env DOKKU_AUDIT_NOW='2026-04-08T20:11:00Z' SSH_USER=dokku SSH_NAME=alice "$REPO_ROOT/user-auth" dokku alice letsencrypt:revoke myapp
+assert_status 0
+assert_eq '0' "$(db_query_single 'SELECT COUNT(1) FROM pending_event_actor_contexts;')"
+run_at '2026-04-08T20:11:01Z' "$REPO_ROOT/post-certs-update" myapp
+assert_status 0
+
+assert_eq '1' "$(db_query_single "SELECT COUNT(1) FROM events WHERE classification = 'certs_command';")"
+assert_eq '1' "$(db_query_single "SELECT COUNT(1) FROM events WHERE classification = 'certs_change';")"
+assert_eq 'letsencrypt:revoke' "$(db_query_single "SELECT json_extract(meta_json, '$.subcommand') FROM events WHERE classification = 'certs_command' LIMIT 1;")"
+assert_eq '' "$(db_query_single "SELECT COALESCE(actor_name, '') FROM events WHERE classification = 'certs_change' LIMIT 1;")"
+assert_eq '' "$(db_query_single "SELECT COALESCE(json_extract(meta_json, '$.triggered_by_subcommand'), '') FROM events WHERE classification = 'certs_change' LIMIT 1;")"
+assert_eq '' "$(db_query_single "SELECT COALESCE(json_extract(meta_json, '$.manager'), '') FROM events WHERE classification = 'certs_change' LIMIT 1;")"
 
 setup_test_env trigger_guard_strict_mode
 run_cmd env DOKKU_AUDIT_STRICT_MODE=true PLUGIN_AVAILABLE_PATH="$REPO_ROOT" bash -lc 'source "$PLUGIN_AVAILABLE_PATH/bootstrap"; failing_handler(){ audit_die "boom"; }; audit_trigger_guard "test-trigger" "myapp" failing_handler'
