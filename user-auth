@@ -86,6 +86,10 @@ audit_handle_user_auth() {
     return 0
   fi
 
+  if [[ "$parsed_subcommand" == "certs:add" ]] && audit_is_triggered_by_letsencrypt "$parsed_app"; then
+    return 0
+  fi
+
   while IFS= read -r token; do
     [[ -n "$token" ]] || continue
     sanitized_tokens+=("$token")

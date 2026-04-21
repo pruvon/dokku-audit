@@ -1580,12 +1580,24 @@ audit_is_internal_config_key() {
   local key="${1:-}"
 
   case "$key" in
-    GIT_REV|DOKKU_APP_TYPE|DOKKU_APP_RESTORE)
+    GIT_REV|DOKKU_APP_TYPE|DOKKU_APP_RESTORE|DOKKU_PROXY_PORT|DOKKU_PROXY_SSL_PORT)
       return 0
       ;;
   esac
 
   return 1
+}
+
+audit_is_triggered_by_letsencrypt() {
+  local app="${1:-}"
+  local result
+  local ts
+
+  [[ -n "$app" ]] || return 1
+
+  ts="$(audit_now_utc)"
+  result="$(audit_db_query_single "SELECT source_subcommand FROM pending_event_actor_contexts WHERE app = $(audit_sql_quote "$app") AND event_kind = 'certs' AND updated_at >= strftime('%Y-%m-%dT%H:%M:%SZ', $(audit_sql_quote "$ts"), '-$(audit_command_match_window_seconds) seconds') LIMIT 1;")"
+  [[ "$result" == letsencrypt:* ]]
 }
 
 audit_mkdirs() {

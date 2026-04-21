@@ -178,6 +178,25 @@ assert_eq '1' "$(db_query_single "SELECT json_extract(meta_json, '$.certs_presen
 assert_eq '1' "$(db_query_single "SELECT json_extract(meta_json, '$.material_redacted') FROM events WHERE classification = 'certs_change' LIMIT 1;")"
 assert_eq '0' "$(db_query_single 'SELECT COUNT(1) FROM pending_event_actor_contexts;')"
 
+setup_test_env command_audit_letsencrypt_enable_with_certs_add
+run_at '2026-04-08T20:00:00Z' "$REPO_ROOT/subcommands/migrate"
+assert_status 0
+
+run_cmd env DOKKU_AUDIT_NOW='2026-04-08T20:07:00Z' SSH_USER=dokku SSH_NAME=alice "$REPO_ROOT/user-auth" dokku alice letsencrypt:enable myapp
+assert_status 0
+run_cmd env DOKKU_AUDIT_NOW='2026-04-08T20:07:01Z' SSH_USER=dokku SSH_NAME=alice "$REPO_ROOT/user-auth" dokku alice certs:add myapp /home/dokku/mektep/letsencrypt/certs/abc/cert.pem /home/dokku/mektep/letsencrypt/certs/abc/key.pem
+assert_status 0
+run_at '2026-04-08T20:07:02Z' "$REPO_ROOT/post-certs-update" myapp
+assert_status 0
+
+assert_eq '0' "$(db_query_single "SELECT COUNT(1) FROM events WHERE classification = 'dokku_command';")"
+assert_eq '1' "$(db_query_single "SELECT COUNT(1) FROM events WHERE classification = 'certs_command';")"
+assert_eq '0' "$(db_query_single "SELECT COUNT(1) FROM events WHERE classification = 'certs_command' AND json_extract(meta_json, '$.subcommand') = 'certs:add';")"
+assert_eq '1' "$(db_query_single "SELECT COUNT(1) FROM events WHERE classification = 'certs_change';")"
+assert_eq 'letsencrypt:enable' "$(db_query_single "SELECT json_extract(meta_json, '$.triggered_by_subcommand') FROM events WHERE classification = 'certs_change' LIMIT 1;")"
+assert_eq 'letsencrypt' "$(db_query_single "SELECT json_extract(meta_json, '$.manager') FROM events WHERE classification = 'certs_change' LIMIT 1;")"
+assert_eq '0' "$(db_query_single 'SELECT COUNT(1) FROM pending_event_actor_contexts;')"
+
 setup_test_env command_audit_letsencrypt_set
 run_at '2026-04-08T20:00:00Z' "$REPO_ROOT/subcommands/migrate"
 assert_status 0
