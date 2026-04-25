@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+set -eo pipefail
+[[ $DOKKU_TRACE ]] && set -x
+
+AUDIT_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# shellcheck source=/dev/null
+source "$AUDIT_SCRIPT_DIR/../bootstrap"
+
+audit_require_database
+
+if audit_is_command_invocation "search" "${1:-}"; then
+  shift
+fi
+
+query=""
+app=""
+limit=20
+format="table"
+quiet=false
+
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    --query)
+      query="$2"
+      shift
+      ;;
+    --app)
+      app="$2"
+      shift
+      ;;
+    --limit)
+      limit="$2"
+      shift
+      ;;
+    --format)
+      format="$2"
+      shift
+      ;;
+    --quiet)
+      quiet=true
+      ;;
+    *)
+      audit_die "unknown argument: $1"
+      exit 1
+      ;;
+  esac
+  shift
+done
+
+[[ -n "$query" ]] || audit_die "--query is required"
+[[ "$limit" =~ ^[0-9]+$ ]] || audit_die "--limit must be a positive integer"
+
+where_clause="(LOWER(message) LIKE LOWER('%' || $(audit_sql_quote "$query" | sed "s/^'//;s/'$//") || '%') OR LOWER(meta_json) LIKE LOWER('%' || $(audit_sql_quote "$query" | sed "s/^'//;s/'$//") || '%'))"
+
+if [[ -n "$app" ]]; then
+  where_clause+=" AND app = $(audit_sql_quote "$app")"
+fi
+
+event_json_sql="$(audit_event_json_sql)"
+actor_label_sql="$(audit_actor_label_sql_expr)"
+table_sql="SELECT id, ts, COALESCE(app, '-'), ${actor_label_sql}, category, action, COALESCE(classification, '-'), status, COALESCE(message, '-') FROM events WHERE ${where_clause} ORDER BY ts DESC LIMIT ${limit};"
+jsonl_sql="SELECT ${event_json_sql} FROM events WHERE ${where_clause} ORDER BY ts DESC LIMIT ${limit};"
+json_sql="SELECT COALESCE(json_group_array(json(event_json)), '[]') FROM (SELECT ${event_json_sql} AS event_json FROM events WHERE ${where_clause} ORDER BY ts DESC LIMIT ${limit});"
+
+audit_emit_query_output "$format" $'ID\tTIME\tAPP\tACTOR\tCATEGORY\tACTION\tCLASSIFICATION\tSTATUS\tMESSAGE' "$table_sql" "$jsonl_sql" "$json_sql" "" "$quiet"
