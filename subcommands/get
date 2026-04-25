@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -eo pipefail
+[[ $DOKKU_TRACE ]] && set -x
+
+AUDIT_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# shellcheck source=/dev/null
+source "$AUDIT_SCRIPT_DIR/../bootstrap"
+
+audit_require_database
+
+if audit_is_command_invocation "get" "${1:-}"; then
+  shift
+fi
+
+key="${1:-}"
+[[ -n "$key" ]] || audit_die "usage: dokku audit:get <key>"
+
+value="$(audit_meta_get "config_${key}" 2>/dev/null || true)"
+if [[ -n "$value" ]]; then
+  printf '%s\n' "$value"
+  exit 0
+fi
+
+audit_die "config key not set: $key"
