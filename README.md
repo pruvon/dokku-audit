@@ -104,7 +104,7 @@ Default paths:
 
 ## What The Plugin Records
 
-- App create and destroy events
+- App create, destroy, and rename events
 - Selected Dokku command invocations recorded through `user-auth`, with actor attribution, target app extraction for supported app-scoped commands, `SSH_USER`/`SSH_NAME` capture, best-effort SSH key fingerprint lookup, noisy read-only polling/report commands skipped, and commands with richer structured follow-on events represented by those follow-on events instead of a duplicate `dokku_command` row
 - Source receipt plus final deploy completion events; intermediate Dokku source-stage hooks are used to enrich the final deploy record without adding extra timeline noise
 - Structured `dokku run` and `dokku enter` events, including actor and target container/process context when Dokku exposes it

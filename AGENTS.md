@@ -40,7 +40,7 @@ set -eo pipefail
 - Syntax-check shell scripts:
 
 ```bash
-bash -n functions commands dependencies install update uninstall report app-create app-destroy receive-app deploy-source-set post-extract post-deploy post-config-update post-domains-update post-proxy-ports-update subcommands/* tests/run.sh tests/test_*.sh tests/helpers/testlib.sh
+bash -n functions commands dependencies install update uninstall report app-create app-destroy receive-app deploy-source-set post-extract post-deploy post-config-update post-domains-update post-proxy-ports-update post-app-rename post-certs-remove post-certs-update scheduler-enter scheduler-post-run scheduler-run user-auth subcommands/* tests/run.sh tests/test_*.sh tests/helpers/testlib.sh
 ```
 
 ## Testing Notes
