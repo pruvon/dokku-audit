@@ -742,7 +742,7 @@ audit_is_sensitive_deploy_metadata_key() {
 
   key="$(audit_lower "${1:-}")"
   case "$key" in
-    *secret*|*token*|*password*|*passwd*|*credential*|*auth*|*private-key*|*private_key*|*access-key*|*access_key*|*api-key*|*api_key*)
+    *secret*|*token*|*password*|*passwd*|*credential*|*auth*|*private-key*|*private_key*|*privatekey*|*access-key*|*access_key*|*accesskey*|*api-key*|*api_key*|*apikey*|*passphrase*|*client_secret*|*auth_token*|*bearer*|*session*)
       return 0
       ;;
     *)
