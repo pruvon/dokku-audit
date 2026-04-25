@@ -51,7 +51,7 @@ done
 [[ -n "$query" ]] || audit_die "--query is required"
 [[ "$limit" =~ ^[0-9]+$ ]] || audit_die "--limit must be a positive integer"
 
-where_clause="(LOWER(message) LIKE LOWER('%' || $(audit_sql_quote "$query" | sed "s/^'//;s/'$//") || '%') OR LOWER(meta_json) LIKE LOWER('%' || $(audit_sql_quote "$query" | sed "s/^'//;s/'$//") || '%'))"
+where_clause="(LOWER(message) LIKE LOWER('%' || $(audit_sql_quote "$query") || '%') OR LOWER(meta_json) LIKE LOWER('%' || $(audit_sql_quote "$query") || '%'))"
 
 if [[ -n "$app" ]]; then
   where_clause+=" AND app = $(audit_sql_quote "$app")"
