@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+set -eo pipefail
+[[ $DOKKU_TRACE ]] && set -x
+
+AUDIT_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# shellcheck source=/dev/null
+source "$AUDIT_SCRIPT_DIR/bootstrap"
+
+audit_handle_post_app_rename() {
+  local old_app="$1"
+  local new_app="$2"
+  local ts
+  local actor_type="system"
+  local actor_name=""
+  local meta_json='{}'
+
+  [[ -n "$old_app" ]] || audit_die "missing old app name"
+  [[ -n "$new_app" ]] || audit_die "missing new app name"
+
+  ts="$(audit_now_utc)"
+  audit_claim_pending_event_actor_context "$new_app" "app-rename" "$ts"
+  actor_type="$AUDIT_CONTEXT_ACTOR_TYPE"
+  actor_name="$AUDIT_CONTEXT_ACTOR_NAME"
+  meta_json="{\"old_app\":$(audit_json_string "$old_app"),\"new_app\":$(audit_json_string "$new_app")}"
+  meta_json="$(audit_json_patch_objects "$meta_json" "$AUDIT_CONTEXT_ACTOR_META_JSON")"
+
+  audit_insert_event "$new_app" "app" "rename" "success" "app_rename" "post-app-rename" "" "" "" "$actor_type" "$actor_name" "" "app renamed from $old_app to $new_app" "$meta_json" "$ts" "$ts"
+}
+
+audit_trigger_guard "post-app-rename" "${1:-}" audit_handle_post_app_rename "$@"
