@@ -6,6 +6,5 @@
 /*.db-wal
 /.env
 /.env.*
-/TASKS.md
 /dokku-audit-SPEC.md
 .DS_Store
