@@ -24,7 +24,7 @@ assert_eq '1' "$(db_query_single "SELECT COUNT(1) FROM events WHERE category = '
 run_cmd "$REPO_ROOT/report"
 assert_status 0
 assert_contains "$RUN_OUTPUT" 'audit plugin enabled: true'
-assert_contains "$RUN_OUTPUT" 'audit schema version: 4'
+assert_contains "$RUN_OUTPUT" 'audit schema version: 5'
 assert_contains "$RUN_OUTPUT" 'audit pending deploys: 0'
 
 setup_test_env prune_command
