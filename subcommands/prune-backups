@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+set -eo pipefail
+[[ $DOKKU_TRACE ]] && set -x
+
+AUDIT_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# shellcheck source=/dev/null
+source "$AUDIT_SCRIPT_DIR/../bootstrap"
+
+audit_require_database
+
+if audit_is_command_invocation "prune-backups" "${1:-}"; then
+  shift
+fi
+
+older_than=""
+confirmed=false
+
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    --older-than)
+      older_than="$2"
+      shift
+      ;;
+    --yes)
+      confirmed=true
+      ;;
+    *)
+      audit_die "unknown argument: $1"
+      ;;
+  esac
+  shift
+done
+
+[[ -n "$older_than" ]] || audit_die "usage: dokku audit:prune-backups --older-than DAYS --yes"
+[[ "$older_than" =~ ^[0-9]+$ ]] || audit_die "--older-than must be a positive integer"
+audit_is_true "$confirmed" || audit_die "refusing to prune without --yes"
+
+backup_dir="$(audit_backup_dir)"
+if [[ ! -d "$backup_dir" ]]; then
+  printf 'no backups to prune (directory does not exist)\n'
+  exit 0
+fi
+
+cutoff="$(audit_days_ago_utc "$older_than")"
+deleted_count=0
+
+for file in "$backup_dir"/*.db; do
+  [[ -f "$file" ]] || continue
+  filename="$(basename "$file")"
+  file_ts=""
+  if [[ "$filename" =~ audit-([0-9]{4})([0-9]{2})([0-9]{2})-([0-9]{2})([0-9]{2})([0-9]{2})\.db ]]; then
+    file_ts="${BASH_REMATCH[1]}-${BASH_REMATCH[2]}-${BASH_REMATCH[3]}T${BASH_REMATCH[4]}:${BASH_REMATCH[5]}:${BASH_REMATCH[6]}Z"
+  fi
+  if [[ -n "$file_ts" && "$file_ts" < "$cutoff" ]]; then
+    if rm -f "$file"; then
+      deleted_count=$((deleted_count + 1))
+    fi
+  fi
+done
+
+ts="$(audit_now_utc)"
+message="pruned ${deleted_count} backup(s) older than ${older_than} days"
+meta_json="{\"older_than_days\":${older_than},\"deleted_count\":${deleted_count},\"backup_dir\":$(audit_json_string "$backup_dir")}"
+audit_insert_maintenance_event "prune-backups" "maintenance_prune_backups" "$message" "$meta_json"
+
+printf 'deleted backups: %s\n' "$deleted_count"

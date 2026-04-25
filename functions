@@ -28,6 +28,32 @@ audit_plugin_version() {
   printf '0.1.0\n'
 }
 
+AUDIT_CACHED_DOKKU_VERSION=""
+
+audit_dokku_version() {
+  if [[ -n "${DOKKU_AUDIT_DOKKU_VERSION:-}" ]]; then
+    printf '%s\n' "$DOKKU_AUDIT_DOKKU_VERSION"
+    return 0
+  fi
+
+  if [[ -n "$AUDIT_CACHED_DOKKU_VERSION" ]]; then
+    printf '%s\n' "$AUDIT_CACHED_DOKKU_VERSION"
+    return 0
+  fi
+
+  if audit_has_command dokku; then
+    AUDIT_CACHED_DOKKU_VERSION="$(dokku version 2>/dev/null | head -n 1 | awk '{print $NF}' || true)"
+    # Validate it looks like a version, not an error message
+    if [[ -n "$AUDIT_CACHED_DOKKU_VERSION" ]] && [[ "$AUDIT_CACHED_DOKKU_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+      : # keep the value
+    else
+      AUDIT_CACHED_DOKKU_VERSION=""
+    fi
+  fi
+
+  printf '%s\n' "$AUDIT_CACHED_DOKKU_VERSION"
+}
+
 audit_data_dir() {
   printf '%s\n' "${DOKKU_AUDIT_DATA_DIR:-${AUDIT_DATA_DIR:-$AUDIT_DEFAULT_DATA_DIR}}"
 }
@@ -187,14 +213,21 @@ audit_now_utc() {
 
 audit_days_ago_utc() {
   local days="$1"
+  local base_date
 
-  if date -u -d "${days} days ago" +"%Y-%m-%dT%H:%M:%SZ" >/dev/null 2>&1; then
-    date -u -d "${days} days ago" +"%Y-%m-%dT%H:%M:%SZ"
+  if [[ -n "${DOKKU_AUDIT_NOW:-}" ]]; then
+    base_date="$DOKKU_AUDIT_NOW"
+  else
+    base_date="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  fi
+
+  if date -u -d "$base_date ${days} days ago" +"%Y-%m-%dT%H:%M:%SZ" >/dev/null 2>&1; then
+    date -u -d "$base_date ${days} days ago" +"%Y-%m-%dT%H:%M:%SZ"
     return 0
   fi
 
-  if date -u -v-"${days}"d +"%Y-%m-%dT%H:%M:%SZ" >/dev/null 2>&1; then
-    date -u -v-"${days}"d +"%Y-%m-%dT%H:%M:%SZ"
+  if date -j -u -v-"${days}"d -f "%Y-%m-%dT%H:%M:%SZ" "$base_date" +"%Y-%m-%dT%H:%M:%SZ" >/dev/null 2>&1; then
+    date -j -u -v-"${days}"d -f "%Y-%m-%dT%H:%M:%SZ" "$base_date" +"%Y-%m-%dT%H:%M:%SZ"
     return 0
   fi
 
@@ -2065,11 +2098,35 @@ SQL
 }
 
 audit_insert_event() {
-  audit_db_exec "$(audit_insert_event_sql "$@")"
+  local meta_json="${14:-}"
+  local default_ts default_created_at
+  default_ts="${15:-$(audit_now_utc)}"
+  default_created_at="${16:-$default_ts}"
+  local dokku_version
+  dokku_version="$(audit_dokku_version)"
+  if [[ -n "$dokku_version" ]]; then
+    if [[ -z "$meta_json" ]]; then
+      meta_json='{}'
+    fi
+    meta_json="$(audit_json_patch_objects "$meta_json" "{\"dokku_version\":$(audit_json_string "$dokku_version")}")"
+  fi
+  audit_db_exec "$(audit_insert_event_sql "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" "${10:-system}" "${11:-}" "${12:-}" "${13:-}" "$meta_json" "$default_ts" "$default_created_at")"
 }
 
 audit_insert_event_with_id() {
-  audit_db_query_single "$(audit_insert_event_sql "$@")
+  local meta_json="${14:-}"
+  local default_ts default_created_at
+  default_ts="${15:-$(audit_now_utc)}"
+  default_created_at="${16:-$default_ts}"
+  local dokku_version
+  dokku_version="$(audit_dokku_version)"
+  if [[ -n "$dokku_version" ]]; then
+    if [[ -z "$meta_json" ]]; then
+      meta_json='{}'
+    fi
+    meta_json="$(audit_json_patch_objects "$meta_json" "{\"dokku_version\":$(audit_json_string "$dokku_version")}")"
+  fi
+  audit_db_query_single "$(audit_insert_event_sql "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" "${10:-system}" "${11:-}" "${12:-}" "${13:-}" "$meta_json" "$default_ts" "$default_created_at")
 SELECT last_insert_rowid();"
 }
 
@@ -2327,45 +2384,6 @@ audit_store_pending_runtime_event() {
     args_json = excluded.args_json;"
 }
 
-audit_attach_container_id_to_pending_run_event() {
-  local app="$1"
-  local container_id="$2"
-  local ts="${3:-$(audit_now_utc)}"
-  local patch_json
-
-  patch_json="{\"container_id\":$(audit_json_string "$container_id"),\"success_hint\":\"container_created\"}"
-
-  sqlite3 "$(audit_db_path)" <<SQL
-.timeout $(audit_busy_timeout_ms)
-PRAGMA foreign_keys = ON;
-BEGIN IMMEDIATE;
-DELETE FROM pending_runtime_events
-WHERE created_at < strftime('%Y-%m-%dT%H:%M:%SZ', $(audit_sql_quote "$ts"), '-$(audit_pending_stale_threshold_seconds) seconds');
-UPDATE events
-SET meta_json = json_patch(COALESCE(meta_json, '{}'), json($(audit_sql_quote "$patch_json")))
-WHERE id = (
-  SELECT event_id
-  FROM pending_runtime_events
-  WHERE subcommand = 'run'
-    AND app = $(audit_sql_quote "$app")
-    AND created_at >= strftime('%Y-%m-%dT%H:%M:%SZ', $(audit_sql_quote "$ts"), '-$(audit_command_match_window_seconds) seconds')
-  ORDER BY created_at DESC, id DESC
-  LIMIT 1
-);
-DELETE FROM pending_runtime_events
-WHERE id = (
-  SELECT id
-  FROM pending_runtime_events
-  WHERE subcommand = 'run'
-    AND app = $(audit_sql_quote "$app")
-    AND created_at >= strftime('%Y-%m-%dT%H:%M:%SZ', $(audit_sql_quote "$ts"), '-$(audit_command_match_window_seconds) seconds')
-  ORDER BY created_at DESC, id DESC
-  LIMIT 1
-);
-COMMIT;
-SQL
-}
-
 audit_with_lock() {
   local lock_file="$1"
   shift
@@ -2542,17 +2560,19 @@ audit_trigger_guard() {
   local exit_code=0
   shift 2
 
-  if "$@"; then
-    return 0
-  else
-    exit_code=$?
-  fi
+  (
+    if "$@"; then
+      exit 0
+    else
+      exit_code=$?
+    fi
 
-  audit_warn "failed to record ${trigger_name}${app_name:+ for app '$app_name'}"
-  if audit_is_true "$(audit_strict_mode)"; then
-    return "$exit_code"
-  fi
-  return 0
+    audit_warn "failed to record ${trigger_name}${app_name:+ for app '$app_name'}"
+    if audit_is_true "$(audit_strict_mode)"; then
+      exit "$exit_code"
+    fi
+    exit 0
+  )
 }
 
 audit_extract_config_keys() {
@@ -2589,10 +2609,12 @@ dokku-audit commands:
   dokku audit:recent [--limit N] [--category VALUE] [--classification VALUE] [--status VALUE] [--since ISO8601] [--format table|json|jsonl] [--quiet]
   dokku audit:show <event-id> [--format table|json]
   dokku audit:search --query TEXT [--app APP] [--limit N] [--format table|json|jsonl] [--quiet]
-  dokku audit:export [--format jsonl|json] [--app APP] [--since ISO8601] [--until ISO8601] [--output PATH]
+  dokku audit:export [--format jsonl|json|csv] [--app APP] [--since ISO8601] [--until ISO8601] [--output PATH]
   dokku audit:backup [--output PATH]
   dokku audit:vacuum
-  dokku audit:prune --older-than DAYS [--category VALUE] [--classification VALUE] [--yes]
+  dokku audit:prune --older-than DAYS [--category VALUE] [--classification VALUE] [--yes] [--schedule] [--unschedule]
+  dokku audit:prune-backups --older-than DAYS [--yes]
+  dokku audit:report-deploy-status <app> <status>
   dokku audit:get <key>
   dokku audit:set <key> <value>
 EOF

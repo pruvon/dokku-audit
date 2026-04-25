@@ -17,6 +17,8 @@ older_than=""
 category=""
 classification=""
 confirmed=false
+schedule=false
+unschedule=false
 
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
@@ -35,15 +37,45 @@ while [[ "$#" -gt 0 ]]; do
     --yes)
       confirmed=true
       ;;
+    --schedule)
+      schedule=true
+      ;;
+    --unschedule)
+      unschedule=true
+      ;;
     *)
       audit_die "unknown argument: $1"
-      exit 1
       ;;
   esac
   shift
 done
 
-[[ -n "$older_than" ]] || audit_die "--older-than is required"
+if audit_is_true "$unschedule"; then
+  audit_meta_set "prune_schedule_older_than" ""
+  audit_meta_set "prune_schedule_category" ""
+  audit_meta_set "prune_schedule_classification" ""
+  printf 'prune schedule removed\n'
+  exit 0
+fi
+
+if audit_is_true "$schedule"; then
+  [[ -n "$older_than" ]] || audit_die "--older-than is required with --schedule"
+  [[ "$older_than" =~ ^[0-9]+$ ]] || audit_die "--older-than must be a positive integer"
+  audit_meta_set "prune_schedule_older_than" "$older_than"
+  audit_meta_set "prune_schedule_category" "$category"
+  audit_meta_set "prune_schedule_classification" "$classification"
+  printf 'prune schedule configured: older-than=%s' "$older_than"
+  [[ -n "$category" ]] && printf ' category=%s' "$category"
+  [[ -n "$classification" ]] && printf ' classification=%s' "$classification"
+  printf '\n'
+  printf 'add a cron job to run: dokku audit:prune --older-than %s' "$older_than"
+  [[ -n "$category" ]] && printf ' --category %s' "$category"
+  [[ -n "$classification" ]] && printf ' --classification %s' "$classification"
+  printf ' --yes\n'
+  exit 0
+fi
+
+[[ -n "$older_than" ]] || audit_die "usage: dokku audit:prune --older-than DAYS [--category VALUE] [--classification VALUE] [--yes] [--schedule] [--unschedule]"
 [[ "$older_than" =~ ^[0-9]+$ ]] || audit_die "--older-than must be a positive integer"
 audit_is_true "$confirmed" || audit_die "refusing to prune without --yes"
 
@@ -61,7 +93,10 @@ actor_name="$(audit_safe_local_actor_name)"
 actor_source="$(audit_safe_local_actor_source)"
 actor_type="$(audit_actor_type_from_name "$actor_name")"
 meta_json="$(audit_json_patch_objects "{\"older_than_days\":${older_than}}" "$(audit_local_actor_meta_json "$actor_source")")"
+
 deleted_count="$(audit_db_query_single "BEGIN IMMEDIATE;
+CREATE TEMP TABLE audit_prune_meta AS
+  SELECT MIN(id) AS min_id, MAX(id) AS max_id FROM events WHERE ${where_clause};
 DELETE FROM events WHERE ${where_clause};
 CREATE TEMP TABLE audit_prune_state(value INTEGER NOT NULL);
 INSERT INTO audit_prune_state(value) SELECT changes();
@@ -97,11 +132,21 @@ INSERT INTO events (
   $(audit_sql_nullable "$actor_name"),
   NULL,
   'prune completed',
-  json_patch(json($(audit_sql_quote "$meta_json")), json_object('deleted_count', (SELECT value FROM audit_prune_state LIMIT 1))),
+  json_patch(
+    json_patch(
+      json($(audit_sql_quote "$meta_json")),
+      json_object('deleted_count', (SELECT value FROM audit_prune_state LIMIT 1))
+    ),
+    COALESCE(
+      (SELECT json_object('min_id', min_id, 'max_id', max_id) FROM audit_prune_meta WHERE min_id IS NOT NULL LIMIT 1),
+      '{}'
+    )
+  ),
   $(audit_sql_quote "$ts")
 );
 SELECT value FROM audit_prune_state LIMIT 1;
 DROP TABLE audit_prune_state;
+DROP TABLE audit_prune_meta;
 COMMIT;")"
 
 printf 'deleted events: %s\n' "$deleted_count"

@@ -96,6 +96,25 @@ if [[ -f "$db_path" && -r "$db_path" ]]; then
   else
     issues+=("stale pending event actor context rows detected: ${stale_event_actor_context_count:-unreadable}")
   fi
+
+  page_count="$(audit_db_query_single 'PRAGMA page_count;' 2>/dev/null || true)"
+  freelist_count="$(audit_db_query_single 'PRAGMA freelist_count;' 2>/dev/null || true)"
+  if [[ "$page_count" =~ ^[0-9]+$ && "$freelist_count" =~ ^[0-9]+$ ]]; then
+    oks+=("database pages: ${page_count} (freelist: ${freelist_count})")
+  fi
+
+  wal_path="${db_path}-wal"
+  if [[ -f "$wal_path" ]]; then
+    wal_size="$(stat -f '%z' "$wal_path" 2>/dev/null || stat -c '%s' "$wal_path" 2>/dev/null || true)"
+    if [[ "$wal_size" =~ ^[0-9]+$ ]]; then
+      wal_size_mb=$((wal_size / 1048576))
+      if [[ "$wal_size_mb" -gt 100 ]]; then
+        issues+=("WAL file is unusually large: ${wal_size_mb}MB (${wal_path})")
+      else
+        oks+=("WAL file size: ${wal_size_mb}MB")
+      fi
+    fi
+  fi
 fi
 
 for ok_item in "${oks[@]}"; do

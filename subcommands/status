@@ -24,3 +24,13 @@ printf 'total events: %s\n' "$(audit_db_query_single 'SELECT COUNT(1) FROM event
 printf 'pending deploy count: %s\n' "$(audit_db_query_single 'SELECT COUNT(1) FROM pending_deploys;')"
 printf 'last event timestamp: %s\n' "$(audit_db_query_single 'SELECT COALESCE(MAX(ts), "-") FROM events;')"
 printf 'last migration timestamp: %s\n' "$last_migration_timestamp"
+
+schedule_older_than="$(audit_meta_get 'prune_schedule_older_than' 2>/dev/null || true)"
+if [[ -n "$schedule_older_than" ]]; then
+  schedule_category="$(audit_meta_get 'prune_schedule_category' 2>/dev/null || true)"
+  schedule_classification="$(audit_meta_get 'prune_schedule_classification' 2>/dev/null || true)"
+  printf 'prune schedule: older-than=%s' "$schedule_older_than"
+  [[ -n "$schedule_category" ]] && printf ' category=%s' "$schedule_category"
+  [[ -n "$schedule_classification" ]] && printf ' classification=%s' "$schedule_classification"
+  printf '\n'
+fi

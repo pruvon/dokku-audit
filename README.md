@@ -130,10 +130,14 @@ Deploy completion is classified as either `source_deploy` or `release_only`.
 - `dokku audit:timeline <app> [--limit N] [--since ISO8601] [--until ISO8601] [--category VALUE] [--format table|json|jsonl] [--quiet]`: Shows the event history for one app. Use `--format` to switch output style.
 - `dokku audit:recent [--limit N] [--category VALUE] [--classification VALUE] [--status VALUE] [--since ISO8601] [--format table|json|jsonl] [--quiet]`: Shows recent events across all apps. In table output, actor labels are normalized as `ssh-key:<label>`, `ssh-user:<user>`, `sudo-user:<user>`, `unix-user:<user>`, or `dokku-system`. Use `--format` for JSON or JSONL output.
 - `dokku audit:show <event-id> [--format table|json]`: Shows full details for one event. Use it after `last-deploys`, `timeline`, or `recent` when you need more context.
-- `dokku audit:export [--format jsonl|json] [--app APP] [--since ISO8601] [--until ISO8601] [--output PATH]`: Exports events as JSON or JSONL. Use `--app` to scope to one app, `--since` / `--until` to bound the time range, and `--output` to write to a file.
+- `dokku audit:search --query TEXT [--app APP] [--limit N] [--format table|json|jsonl] [--quiet]`: Searches `message` and `meta_json` for free-text matches. Use `--query` to specify the search term and `--app` to scope to one app.
+- `dokku audit:export [--format jsonl|json|csv] [--app APP] [--since ISO8601] [--until ISO8601] [--output PATH]`: Exports events as JSON, JSONL, or CSV. Use `--app` to scope to one app, `--since` / `--until` to bound the time range, and `--output` to write to a file.
 - `dokku audit:backup [--output PATH]`: Creates a safe SQLite backup of the audit database. Recommended before major upgrades or cleanup.
 - `dokku audit:vacuum`: Runs SQLite maintenance. Useful after heavy pruning or long-term use.
 - `dokku audit:prune --older-than DAYS [--category VALUE] [--classification VALUE] [--yes]`: Deletes old events intentionally. Use carefully; this is the cleanup command.
+- `dokku audit:prune-backups --older-than DAYS [--yes]`: Deletes old SQLite backup files from the backup directory. Use it to prevent backups from accumulating indefinitely.
+- `dokku audit:get <key>`: Reads a plugin runtime configuration value from the database. Use it to inspect settings such as `busy_timeout_ms` or `strict_mode`.
+- `dokku audit:set <key> <value>`: Stores a plugin runtime configuration value in the database. Overrides environment variable defaults. Examples: `dokku audit:set strict_mode true`, `dokku audit:set deploy_metadata_max_bytes 2048`.
 
 ## Common Examples
 
@@ -195,6 +199,36 @@ Prune old maintenance events:
 
 ```bash
 dokku audit:prune --older-than 180 --category maintenance --yes
+```
+
+Prune old backup files:
+
+```bash
+dokku audit:prune-backups --older-than 30 --yes
+```
+
+Search for events containing a specific string:
+
+```bash
+dokku audit:search --query "error"
+```
+
+Search within one app:
+
+```bash
+dokku audit:search --query "deploy" --app myapp
+```
+
+Read a runtime setting:
+
+```bash
+dokku audit:get strict_mode
+```
+
+Store a runtime setting:
+
+```bash
+dokku audit:set strict_mode true
 ```
 
 ## Output Formats

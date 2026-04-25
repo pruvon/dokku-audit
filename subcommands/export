@@ -72,4 +72,15 @@ if [[ "$format" == "json" ]]; then
   exit 0
 fi
 
+if [[ "$format" == "csv" ]]; then
+  csv_output="$(sqlite3 -header -csv "$(audit_db_path)" <<SQL
+.timeout $(audit_busy_timeout_ms)
+PRAGMA foreign_keys = ON;
+SELECT id, ts, app, category, action, status, classification, source_trigger, source_type, image_tag, rev, actor_type, actor_name, correlation_id, message, meta_json FROM events WHERE ${where_clause} ORDER BY ts DESC;
+SQL
+)"
+  audit_write_content "$output_path" "$csv_output"
+  exit 0
+fi
+
 audit_die "unsupported format: $format"

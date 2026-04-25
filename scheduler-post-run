@@ -11,12 +11,77 @@ audit_handle_scheduler_post_run() {
   local scheduler="${1:-}"
   local app="${2:-}"
   local container_id="${3:-}"
+  local ts
+  local patch_json
+  local exit_code=""
+  local started_at=""
+  local finished_at=""
+  local duration_seconds=""
+  local container_status=""
 
   : "$scheduler"
   [[ -n "$app" ]] || audit_die "missing app name"
   [[ -n "$container_id" ]] || audit_die "missing container id"
 
-  audit_attach_container_id_to_pending_run_event "$app" "$container_id" "$(audit_now_utc)"
+  ts="$(audit_now_utc)"
+
+  # Attempt to read container exit info if docker is available
+  if audit_has_command docker; then
+    read -r exit_code started_at finished_at <<< "$(
+      docker inspect --format='{{.State.ExitCode}} {{.State.StartedAt}} {{.State.FinishedAt}}' "$container_id" 2>/dev/null || true
+    )" || true
+
+    # Docker returns "0001-01-01T00:00:00Z" for times that are not set
+    if [[ -n "$started_at" && "$started_at" != "0001-01-01T00:00:00Z" && -n "$finished_at" && "$finished_at" != "0001-01-01T00:00:00Z" ]]; then
+      duration_seconds="$(audit_db_query_single ':memory:' "SELECT COALESCE(CAST((julianday($(audit_sql_quote \"$finished_at\")) - julianday($(audit_sql_quote \"$started_at\"))) * 86400 AS INTEGER), '');")"
+    fi
+
+    if [[ -n "$exit_code" && "$exit_code" =~ ^-?[0-9]+$ ]]; then
+      if [[ "$exit_code" == "0" ]]; then
+        container_status="success"
+      else
+        container_status="error"
+      fi
+    fi
+  fi
+
+  patch_json="{\"container_id\":$(audit_json_string "$container_id"),\"success_hint\":\"container_created\"}"
+  if [[ -n "$exit_code" && "$exit_code" =~ ^-?[0-9]+$ ]]; then
+    patch_json="$(audit_json_patch_objects "$patch_json" "{\"exit_code\":$exit_code,\"status\":$(audit_json_string "$container_status")}")"
+  fi
+  if [[ -n "$duration_seconds" ]]; then
+    patch_json="$(audit_json_patch_objects "$patch_json" "{\"duration_seconds\":$duration_seconds}")"
+  fi
+
+  sqlite3 "$(audit_db_path)" <<SQL
+.timeout $(audit_busy_timeout_ms)
+PRAGMA foreign_keys = ON;
+BEGIN IMMEDIATE;
+DELETE FROM pending_runtime_events
+WHERE created_at < strftime('%Y-%m-%dT%H:%M:%SZ', $(audit_sql_quote "$ts"), '-$(audit_pending_stale_threshold_seconds) seconds');
+UPDATE events
+SET meta_json = json_patch(COALESCE(meta_json, '{}'), json($(audit_sql_quote "$patch_json")))
+WHERE id = (
+  SELECT event_id
+  FROM pending_runtime_events
+  WHERE subcommand = 'run'
+    AND app = $(audit_sql_quote "$app")
+    AND created_at >= strftime('%Y-%m-%dT%H:%M:%SZ', $(audit_sql_quote "$ts"), '-$(audit_command_match_window_seconds) seconds')
+  ORDER BY created_at DESC, id DESC
+  LIMIT 1
+);
+DELETE FROM pending_runtime_events
+WHERE id = (
+  SELECT id
+  FROM pending_runtime_events
+  WHERE subcommand = 'run'
+    AND app = $(audit_sql_quote "$app")
+    AND created_at >= strftime('%Y-%m-%dT%H:%M:%SZ', $(audit_sql_quote "$ts"), '-$(audit_command_match_window_seconds) seconds')
+  ORDER BY created_at DESC, id DESC
+  LIMIT 1
+);
+COMMIT;
+SQL
 }
 
 audit_trigger_guard "scheduler-post-run" "${2:-}" audit_handle_scheduler_post_run "$@"
