@@ -44,28 +44,48 @@ audit_lock_file() {
   printf '%s\n' "${DOKKU_AUDIT_LOCK_FILE:-${AUDIT_LOCK_FILE:-$(audit_data_dir)/migrate.lock}}"
 }
 
+audit_config_get() {
+  local key="$1"
+  local env_var="$2"
+  local default="$3"
+  local meta_value=""
+
+  meta_value="$(audit_meta_get "config_${key}" 2>/dev/null || true)"
+  if [[ -n "$meta_value" ]]; then
+    printf '%s\n' "$meta_value"
+    return 0
+  fi
+
+  if [[ -n "$env_var" ]] && [[ -n "${!env_var+x}" ]]; then
+    printf '%s\n' "${!env_var}"
+    return 0
+  fi
+
+  printf '%s\n' "$default"
+}
+
 audit_busy_timeout_ms() {
-  printf '%s\n' "$AUDIT_DEFAULT_BUSY_TIMEOUT_MS"
+  audit_config_get "busy_timeout_ms" "DOKKU_AUDIT_BUSY_TIMEOUT_MS" "$AUDIT_DEFAULT_BUSY_TIMEOUT_MS"
 }
 
 audit_pending_stale_threshold_seconds() {
-  printf '%s\n' "$AUDIT_DEFAULT_PENDING_STALE_THRESHOLD_SECONDS"
+  audit_config_get "pending_stale_threshold_seconds" "DOKKU_AUDIT_PENDING_STALE_THRESHOLD_SECONDS" "$AUDIT_DEFAULT_PENDING_STALE_THRESHOLD_SECONDS"
 }
 
 audit_command_match_window_seconds() {
-  printf '%s\n' "$AUDIT_DEFAULT_COMMAND_MATCH_WINDOW_SECONDS"
+  audit_config_get "command_match_window_seconds" "DOKKU_AUDIT_COMMAND_MATCH_WINDOW_SECONDS" "$AUDIT_DEFAULT_COMMAND_MATCH_WINDOW_SECONDS"
 }
 
 audit_strict_mode() {
-  printf '%s\n' "$AUDIT_DEFAULT_STRICT_MODE"
+  audit_config_get "strict_mode" "DOKKU_AUDIT_STRICT_MODE" "$AUDIT_DEFAULT_STRICT_MODE"
 }
 
 audit_deploy_metadata_max_bytes() {
-  printf '%s\n' "$AUDIT_DEFAULT_DEPLOY_METADATA_MAX_BYTES"
+  audit_config_get "deploy_metadata_max_bytes" "DOKKU_AUDIT_DEPLOY_METADATA_MAX_BYTES" "$AUDIT_DEFAULT_DEPLOY_METADATA_MAX_BYTES"
 }
 
 audit_journal_mode_preference() {
-  printf '%s\n' "$AUDIT_DEFAULT_JOURNAL_MODE"
+  audit_config_get "journal_mode" "DOKKU_AUDIT_JOURNAL_MODE" "$AUDIT_DEFAULT_JOURNAL_MODE"
 }
 
 audit_runtime_user() {
@@ -1672,7 +1692,7 @@ audit_db_exec() {
   fi
 
   sqlite3 "$db_path" <<SQL
-.timeout $(audit_busy_timeout_ms)
+.timeout ${AUDIT_DEFAULT_BUSY_TIMEOUT_MS}
 PRAGMA foreign_keys = ON;
 $sql
 SQL
@@ -1723,7 +1743,7 @@ audit_db_query_tsv() {
   fi
 
   sqlite3 -tabs "$db_path" <<SQL
-.timeout $(audit_busy_timeout_ms)
+.timeout ${AUDIT_DEFAULT_BUSY_TIMEOUT_MS}
 PRAGMA foreign_keys = ON;
 $sql
 SQL
@@ -2568,9 +2588,12 @@ dokku-audit commands:
   dokku audit:timeline <app> [--limit N] [--since ISO8601] [--until ISO8601] [--category VALUE] [--format table|json|jsonl] [--quiet]
   dokku audit:recent [--limit N] [--category VALUE] [--classification VALUE] [--status VALUE] [--since ISO8601] [--format table|json|jsonl] [--quiet]
   dokku audit:show <event-id> [--format table|json]
+  dokku audit:search --query TEXT [--app APP] [--limit N] [--format table|json|jsonl] [--quiet]
   dokku audit:export [--format jsonl|json] [--app APP] [--since ISO8601] [--until ISO8601] [--output PATH]
   dokku audit:backup [--output PATH]
   dokku audit:vacuum
   dokku audit:prune --older-than DAYS [--category VALUE] [--classification VALUE] [--yes]
+  dokku audit:get <key>
+  dokku audit:set <key> <value>
 EOF
 }
