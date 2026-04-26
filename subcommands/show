@@ -44,11 +44,11 @@ if [[ "$format" == "json" ]]; then
 fi
 
 if audit_has_command python3; then
-  python3 - "$json_output" <<'PY'
+  printf '%s\n' "$json_output" | python3 <<'PY'
 import json
 import sys
 
-payload = json.loads(sys.argv[1])
+payload = json.load(sys.stdin)
 meta_payload = payload.get("meta", {})
 meta = json.dumps(meta_payload, indent=2, sort_keys=True)
 mapping = [
@@ -81,7 +81,7 @@ mapping = [
 ]
 
 for key, value in mapping:
-    print(f"{key}: {value}")
+    print("{}: {}".format(key, value))
 print("meta_json:")
 print(meta)
 PY
